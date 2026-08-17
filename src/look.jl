@@ -8,7 +8,12 @@ end
 
 """Neon cyberpunk: cyan → magenta → green → amber."""
 const CYBERPUNK = Theme(:cyberpunk,
-    [colorant"#00FFFF", colorant"#FF00FF", colorant"#00FF00", colorant"#FFB000"],
+    [
+        colorant"#FF00FF",
+        colorant"#8888FF",
+        colorant"#00FFFF",
+        colorant"#00FF00",
+    ],
     ['░', '▒', '▓', '█'], '░',
     ['◉'],
 )
@@ -24,7 +29,7 @@ const NEON = Theme(
 """Phosphor-green CRT aesthetic."""
 const MATRIX = Theme(
     :matrix,
-    [colorant"#00FF00", colorant"#00C800", colorant"#009600"],
+    [colorant"#009600", colorant"#00C800", colorant"#00FF00"],
     ['░', '▒', '▓', '█'], '░',
     ['◈'],
 )
@@ -32,7 +37,7 @@ const MATRIX = Theme(
 """Retro amber monochrome, like an old VT220 terminal."""
 const AMBER = Theme(
     :amber,
-    [colorant"#FFB000", colorant"#FF8C00", colorant"#FF6400"],
+    [colorant"#FF6400", colorant"#FF8C00", colorant"#FFB000"],
     ['░', '▒', '▓', '█'], '░',
     ['◉'],
 )

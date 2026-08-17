@@ -22,7 +22,10 @@ for file in ProgJob(files, OCEAN; desc = "Parsing files")
 end
 
 # works with comprehensions!
-[x^2 for x in ProgJob(1:30000, GLACIER; desc = "Squaring")];
+[x^2 for x in ProgJob(1:9001, GLACIER; desc = "Squaring")];
+
+# comprehensions over matrices!
+[x^2 for x in ProgJob(rand(32,32), GLACIER; desc = "Squaring matrix elements!")]
 ```
 
 ## TODO

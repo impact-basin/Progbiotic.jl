@@ -156,6 +156,30 @@ const _ANSI_RESET = "\e[0m"
 const _ANSI_DIM   = "\e[2m"
 const _ANSI_BOLD  = "\e[1m"
 
+"""Interpolates a color at fractional position t ∈ [0, 1] across the theme palette."""
+function _palette_gradient(palette::Vector{Color}, t::Float64)
+    isempty(palette) && return ""
+    length(palette) == 1 && return _ansi_fg(palette[1])
+    
+    # Position along the palette segments
+    scaled = clamp(t, 0.0, 1.0) * (length(palette) - 1)
+    idx = floor(Int, scaled) + 1
+    frac = scaled - floor(scaled)
+    
+    if idx >= length(palette)
+        return _ansi_fg(palette[end])
+    end
+    
+    # Linear interpolation between adjacent palette colors in RGB
+    c1, c2 = RGB(palette[idx]), RGB(palette[idx + 1])
+    interp_c = RGB(
+        red(c1)   + frac * (red(c2)   - red(c1)),
+        green(c1) + frac * (green(c2) - green(c1)),
+        blue(c1)  + frac * (blue(c2)  - blue(c1))
+    )
+    return _ansi_fg(interp_c)
+end
+
 
 """
     render_bar(prog::Float64, t::Theme; width::Int = 40) -> String
@@ -171,8 +195,8 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
     full_chars = div(total_subunits, k)
     rem_subunits = rem(total_subunits, k)
 
-    fg_color = isempty(t.palette) ? "" : _ansi_fg(t.palette[1])
-    dim_color = isempty(t.palette) ? _ANSI_DIM : _ansi_fg(t.palette[end])
+    fg_color = isempty(t.palette) ? "" : _palette_gradient(t.palette, prog)
+    dim_color = isempty(t.palette) ? _ANSI_DIM : _ansi_fg(t.palette[begin])
 
     # Filled portion
     bar_full = repeat(string(t.barunits[end]), full_chars)
@@ -203,6 +227,17 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
     now_sec = time()
     elapsed = max(0.0, now_sec - start_time)
 
+    rate = elapsed > 0 ? (state / elapsed) : 0.0
+    rate_str = if rate >= 1_000_000
+        string(round(rate / 1_000_000, digits=1), "M it/s")
+    elseif rate >= 1_000
+        string(round(rate / 1_000, digits=1), "k it/s")
+    elseif rate >= 1.0
+        string(round(rate, digits=1), " it/s")
+    else
+        string(round(1.0 / max(rate, 1e-6), digits=1), " s/it")
+    end
+
     # 1. [Blinker / Spinner] - Cycles through spinner glyphs and palette colors
     spinner_char = isempty(t.spinner) ? '◉' : t.spinner[mod(floor(Int, now_sec * 8), length(t.spinner)) + 1]
     spinner_color = isempty(t.palette) ? "" : _ansi_fg(t.palette[mod(floor(Int, now_sec * 4), length(t.palette)) + 1])
@@ -224,7 +259,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
         prog_str = "$bar $(lpad(pct, 3))% ($state/$total)"
 
         if prog >= 1.0
-            eta_str = string(_ANSI_DIM, "done in ", duration_str(elapsed), _ANSI_RESET)
+            eta_str = string(_ANSI_DIM, "done in ", duration_str(elapsed, show_ms = true), _ANSI_RESET)
         elseif prog > 0.0
             eta_sec = (1.0 - prog) * (elapsed / prog)
             eta_str = string(_ANSI_DIM, "ETA: ", duration_str(eta_sec), _ANSI_RESET)
@@ -234,7 +269,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
     end
 
     # Return full rendered line: [blinker] [desc] [progress] [eta]
-    return "$blinker_str $desc_str$prog_str $eta_str"
+    return "$blinker_str $desc_str$prog_str [$rate_str] $eta_str"
 end
 
 function update!(job :: ProgJob, new :: Union{Int, Nothing} = nothing)
