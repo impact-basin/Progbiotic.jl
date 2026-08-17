@@ -1,0 +1,13 @@
+name = "ProgBar"
+uuid = "fd93e9f9-5ff4-4e8b-9dd3-c466c8f67570"
+authors = ["Henry Eshbaugh <henry.eshbaugh@physics.ox.ac.uk>"]
+version = "0.1.0"
+
+[compat]
+julia = "1.10.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]
