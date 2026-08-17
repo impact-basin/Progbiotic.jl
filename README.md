@@ -1,3 +1,31 @@
-# ProgBar
+# ProgBiotic
 
-[![Build Status](https://github.com/eshbaugh/ProgBar.jl/actions/workflows/CI.yml/badge.svg?branch=master)](https://github.com/eshbaugh/ProgBar.jl/actions/workflows/CI.yml?query=branch%3Amaster)
+Really neat progress bars.
+
+Some examples:
+
+```julia
+# tqdm-like!
+for i in ProgJob(1:100; desc = "Ordinary")
+    sleep(0.1)
+end
+
+# thread-safe!
+@threads for i in ProgJob(1:100; desc = "Multithreaded")
+    sleep(0.1)
+end
+
+# themeable!
+files = ["data1.csv", "data2.csv", "data3.csv", "data4.csv"]
+for file in ProgJob(files, OCEAN; desc = "Parsing files")
+    sleep(0.3)
+end
+
+# works with comprehensions!
+[x^2 for x in ProgJob(1:30000, GLACIER; desc = "Squaring")];
+```
+
+## TODO
+
+- Trees of progress bars
+- Macro interfaces.
