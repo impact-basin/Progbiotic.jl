@@ -31,12 +31,15 @@ end
 # 3. Works seamlessly with comprehensions / map / collect
 [x^2 for x in ProgJob(1:3000000000, GLACIER; desc = "Squaring")];
 
-p = ProgJob(1:100; desc = "Test")
+p = ProgJob(1:100, AMBER; desc = "Test")
 for i in p
-    sleep(0.1)
+    sleep(0.05)
 end
 
 p = ProgJob(1:100; desc = "Test")
 @threads for i in p
     sleep(0.1)
 end
+
+[x^2 for x in ProgJob(rand(32,32), GLACIER; desc = "Squaring matrix elements!")]
+
