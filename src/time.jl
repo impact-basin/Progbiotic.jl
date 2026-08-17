@@ -1,0 +1,49 @@
+function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = false)
+    if isnan(seconds)
+        return "N/A"
+    elseif isinf(seconds)
+        return seconds > 0 ? "∞" : "-∞"
+    elseif seconds < 0
+        return "-" * format_duration(-seconds; compact = compact, show_ms = show_ms)
+    end
+    # Handle sub-second intervals if requested
+    if show_ms && seconds < 1.0
+        if seconds < 1e-3
+            val = round(seconds * 1e6, digits = 1)
+            return string(val, compact ? "µs" : " microsecond" * (val == 1 ? "" : "s"))
+        else
+            val = round(seconds * 1e3, digits = 1)
+            return string(val, compact ? "ms" : " millisecond" * (val == 1 ? "" : "s"))
+        end
+    end
+
+    total_secs = floor(Int, seconds)
+    ms = round(Int, (seconds - total_secs) * 1000)
+
+    days, rem_secs = divrem(total_secs, 86400)
+    hours, rem_secs = divrem(rem_secs, 3600)
+    mins, secs = divrem(rem_secs, 60)
+
+    parts = String[]
+
+    if days > 0
+        push!(parts, compact ? "$(days)d" : 
+            "$(days) day" * (days == 1 ? "" : "s"))
+    end
+    if hours > 0 || days > 0
+        push!(parts, compact ? "$(hours)h" : "$(hours) hour" * (hours == 1 ? "" : "s"))
+    end
+    if mins > 0 || hours > 0 || days > 0
+        push!(parts, compact ? "$(mins)m" : "$(mins) minute" * (mins == 1 ? "" : "s"))
+    end
+
+# Include milliseconds if under an hour and show_ms is true
+    if show_ms && ms > 0 && days == 0 && hours == 0
+        sec_val = secs + ms / 1000.0
+        push!(parts, compact ? "$(round(sec_val,digits = 2))s" : "$(round(sec_val, digits=2)) seconds")
+    else
+        push!(parts, compact ? "$(secs) s" : "$(secs) second" * (secs == 1 ? "" : "s"))
+    end
+
+    return compact ? join(parts, " ") : join(parts, ", ")
+end
