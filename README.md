@@ -1,8 +1,6 @@
-# ProgBiotic
+# ProgBiotic.jl
 
-Really neat progress bars.
-
-Some examples:
+This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM and macro interfaces.
 
 ## Usage (a la TQDM)
 
@@ -66,6 +64,10 @@ end
 
 # Caveat emptor! AI slop.
 
-After the State of Julia keynote, where both Keno Fischer and Tim Holy mentioned that they found AI useful, I figured it was time to take a test-drive. This package is the result of that test-drive.
+After the State of Julia keynote, where both Keno Fischer and Tim Holy mentioned that they found AI useful, it was time to take AI for a test-drive.
 
+This package has scratched a low-priority itch I've had for a while, but haven't had the time to implement myself. I suppose that's good.
 
+On the other hand, the quality of the source code is lower than what I'd desire; perhaps some work over a free weekend will sort it out.
+
+Overall, AI-assisted programming seems useful for low-criticality tasks. Interesting!
