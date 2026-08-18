@@ -2,7 +2,7 @@ using Progbiotic
 
 
 @progress "Downloading weights" threads=true for i in 1:100
-    sleep(0.01)
+    sleep(0.1)
 end
 
 @progress "Long job!" threads=true for i in 1:30
