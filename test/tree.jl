@@ -1,3 +1,5 @@
+using ProgBiotic
+
 sample_data = Dict(
     "src" => Dict(
         "ProgBar.jl" => "4.2 KB",

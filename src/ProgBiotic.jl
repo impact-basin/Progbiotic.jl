@@ -39,6 +39,17 @@ export _render_bar
 export with_job
 
 include("bars.jl")
-include("user.jl")
+export ProgBar
+export add_job!
+export get_children
+export render_progbar_tree
+export _render_job_nodes
+export print_progbar_in_gutter
+export update!
+export with_tree_gutter
+export ProgContext
+
+include("meta.jl")
+export @progress
 
 end
