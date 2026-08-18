@@ -52,11 +52,20 @@ end
 end
 
 
-# 3. 3-level deep nested progress tree with vanishing micro-batch bars.
+# 3-level deep nested progress tree with vanishing micro-batch bars.
 @progress ("Outer Pipeline", OCEAN) for i = 1:3
     @progress (stage => ("Stage $i", CYBERPUNK)) for j = 1:5
-        @progress "Micro-batch" vanish=1.0 for k = 1:10
+        @progress "Micro-batch" for k = 1:10
             sleep(0.005)
+        end
+    end
+end
+
+# Supports multithreading!
+@progress "Loop 1" threads=true for i = 1:3
+    @progress "Loop 2, i=$i" for j = 1:5
+        @progress "Micro-batch" for k = 1:10
+            sleep(0.05)
         end
     end
 end
