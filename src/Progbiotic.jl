@@ -27,6 +27,21 @@ export GRUVBOX
 export REDLINE
 export MIAMI
 export SOLARIZED
+export HALLOWEEN
+export UNICORN
+export COFFEE
+export TERMINAL
+export MONO
+export SLATE
+export MIDNIGHT
+export FOREST
+export STEEL
+export PUNK
+export ACID
+export BLOODMOON
+export GLITCH
+export REBEL
+export VAPORWAVE
 
 
 include("time.jl")

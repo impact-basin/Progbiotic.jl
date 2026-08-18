@@ -178,3 +178,142 @@ colorant"#2AA198", colorant"#859900", colorant"#B58900"],
     ['╶', '─', '━', '█'], '┄',
     ['⠁', '⠂', '⠄', '⡀', '⢀', '⠠', '⠐', '⠈'],
 )
+
+"""Spooky season: deep plum, electric violet, pumpkin orange,
+and a flicker of sickly green."""
+const HALLOWEEN = Theme(
+    :halloween,
+    [colorant"#1A0B2E", colorant"#6D28D9",
+colorant"#F97316", colorant"#84CC16"],
+    [' ', '░', '▒', '▓', '█'], '░',
+    ['✦', '✧', '★', '✶'],
+)
+
+"""Pastel rainbow: cotton-candy pink, baby blue, butter
+yellow, and soft mint."""
+const UNICORN = Theme(
+    :unicorn,
+    [colorant"#FFD1DC", colorant"#A1CAF1",
+colorant"#FCF6BD", colorant"#C1E1C1"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['◐', '◓', '◑', '◒'],
+)
+
+"""Rich roasted coffee: dark mocha, caramel, cream, and a
+hint of cinnamon."""
+const COFFEE = Theme(
+    :coffee,
+    [colorant"#3E2723", colorant"#6D4C41",
+colorant"#A1887F", colorant"#D7CCC8"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+)
+
+"""Classic phosphor terminal: pure green glow on dark, with
+bold blocky cells."""
+const TERMINAL = Theme(
+    :terminal,
+    [colorant"#0F380F", colorant"#306230",
+colorant"#8BAC0F", colorant"#9BBC0F"],
+    ['░', '▒', '▓', '█'], '░',
+    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+)
+
+"""Minimalist black/white corporate: clean monochrome gradient."""
+const MONO = Theme(
+    :mono,
+    [colorant"#000000", colorant"#333333",
+colorant"#666666", colorant"#999999", colorant"#CCCCCC"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+)
+
+"""Cool slate gray: boardroom-clean professional gradient."""
+const SLATE = Theme(
+    :slate,
+    [colorant"#2D3748", colorant"#4A5568",
+colorant"#718096", colorant"#A0AEC0", colorant"#E2E8F0"],
+    ['░', '▒', '▓', '█'], ' ',
+    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+)
+
+"""Dark navy with subtle blue accents: understated elegance."""
+const MIDNIGHT = Theme(
+    :midnight,
+    [colorant"#0A0E1A", colorant"#1A1F36",
+colorant"#2D3561", colorant"#415A77"],
+    ['·', '▪', '▫', '█'], ' ',
+    ['◉', '◎', '●', '○'],
+)
+
+"""Deep professional greens: forest canopy gradient."""
+const FOREST = Theme(
+    :forest,
+    [colorant"#1B4332", colorant"#2D6A4F",
+colorant"#40916C", colorant"#95D5B2"],
+    ['░', '▒', '▓', '█'], ' ',
+    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+)
+
+"""Metallic industrial gray: sleek and modern."""
+const STEEL = Theme(
+    :steel,
+    [colorant"#2C3E50", colorant"#34495E",
+colorant"#7F8C8D", colorant"#BDC3C7"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+)
+
+"""Anarchy neon: high-contrast punk aesthetic with magenta,
+green, and red on black."""
+const PUNK = Theme(
+    :punk,
+    [colorant"#FF00FF", colorant"#00FF00",
+colorant"#000000", colorant"#FF0000"],
+    ['░', '▒', '▓', '█'], '░',
+    ['✦', '✧', '★', '☆'],
+)
+
+"""Toxic radioactive glow: acid green and hot pink on black."""
+const ACID = Theme(
+    :acid,
+    [colorant"#39FF14", colorant"#FF073A",
+colorant"#000000", colorant"#B026FF"],
+    [' ', '░', '▒', '▓', '█'], ' ',
+    ['◈', '◆', '◇', '◈'],
+)
+
+"""Deep crimson bloodmoon: aggressive red gradient."""
+const BLOODMOON = Theme(
+    :bloodmoon,
+    [colorant"#1A0000", colorant"#660000",
+colorant"#CC0000", colorant"#FF0000"],
+    ['·', '▪', '▫', '■', '█'], '·',
+    ['✦', '✧', '★', '☆'],
+)
+
+"""Chaotic RGB glitch: digital distortion aesthetic."""
+const GLITCH = Theme(
+    :glitch,
+    [colorant"#00FFFF", colorant"#FF00FF",
+colorant"#FFFF00", colorant"#00FF00"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['◇', '◈', '◆', '◈'],
+)
+
+"""Anarchy flag: stark red, black, and white."""
+const REBEL = Theme(
+    :rebel,
+    [colorant"#FF0000", colorant"#000000", colorant"#FFFFFF"],
+    ['░', '▒', '▓', '█'], '░',
+    ['⚠', '☢', '☣', '⚠'],
+)
+
+"""Retro future vaporwave: pink, cyan, and purple gradient."""
+const VAPORWAVE = Theme(
+    :vaporwave,
+    [colorant"#FF71CE", colorant"#01CDFE",
+colorant"#05FFA1", colorant"#B967FF"],
+    [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'], ' ',
+    ['◐', '◓', '◑', '◒'],
+)
