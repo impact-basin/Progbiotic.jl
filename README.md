@@ -4,6 +4,8 @@ Really neat progress bars.
 
 Some examples:
 
+## Usage (a la TQDM)
+
 ```julia
 # tqdm-like!
 for i in ProgJob(1:100; desc = "Ordinary")
@@ -28,7 +30,42 @@ end
 [x^2 for x in ProgJob(rand(32,32), GLACIER; desc = "Squaring matrix elements!")]
 ```
 
-## TODO
+## Macro interface
 
-- Trees of progress bars
-- Macro interfaces.
+The `@progress` macro is exported to wrap for loops. This macro manipulates the AST to place `@progress` invocations within that loop into the context of the outer progress tree.
+
+```julia
+@progress "Downloading weights" for i in 1:100
+    sleep(0.01)
+end
+
+# Outer loop is the root of the tree (rendered flush at column 0)
+@progress "Data Ingestion Pipeline" for phase in 1:2
+    @progress "Reading files" for file in 1:5
+        sleep(0.02)
+    end
+end
+
+# Provides an explicit header title for the whole tree
+@progress title="Model Training Pipeline" theme=OCEAN "Epochs" for epoch in 1:3
+    @progress ("Epoch $epoch Batches", CYBERPUNK) for batch in 1:20
+        sleep(0.01)
+    end
+end
+
+
+# 3. 3-level deep nested progress tree with vanishing micro-batch bars.
+@progress ("Outer Pipeline", OCEAN) for i = 1:3
+    @progress (stage => ("Stage $i", CYBERPUNK)) for j = 1:5
+        @progress "Micro-batch" vanish=1.0 for k = 1:10
+            sleep(0.005)
+        end
+    end
+end
+```
+
+# Caveat emptor! AI slop.
+
+After the State of Julia keynote, where both Keno Fischer and Tim Holy mentioned that they found AI useful, I figured it was time to take a test-drive. This package is the result of that test-drive.
+
+
