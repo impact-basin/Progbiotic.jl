@@ -5,7 +5,7 @@ using Progbiotic
     sleep(0.1)
 end
 
-@progress "Long job!" threads=true for i in 1:30
+@progress "Long job!" threads=true for i in 1:36
     @progress "Short job $(i)!" vanish_timeout=2.0 for j in 1:10
         sleep(1)
     end
