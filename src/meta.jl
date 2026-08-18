@@ -41,6 +41,7 @@ function _parse_progress_args(args)
         :bind           => nothing,
         :desc           => "",
         :theme          => :(Progbiotic.AMBER),
+        :threads        => false, 
         :title          => "",
         :vanish         => nothing,
         :vanish_timeout => nothing,
@@ -84,6 +85,18 @@ function _transform_progress_ast(expr, pbar_sym, parent_job_sym)
 
             extra_kws = _extract_extra_kws(opts)
 
+            loop_expr = opts[:threads] ? quote
+                Base.Threads.@threads for $var in $iter_sym
+                    $new_body
+                    Progbiotic.update!($pbar_sym, $job_sym)
+                end
+            end : quote
+                for $var in $iter_sym
+                    $new_body
+                    Progbiotic.update!($pbar_sym, $job_sym)
+                end
+            end
+
             return quote
                 let $iter_sym = $(iter)
                     $job_sym = Progbiotic.add_job!(
@@ -96,10 +109,7 @@ function _transform_progress_ast(expr, pbar_sym, parent_job_sym)
                     )
                     $bind_assignment
                     try
-                        for $var in $iter_sym
-                            $new_body
-                            Progbiotic.update!($pbar_sym, $job_sym)
-                        end
+                        $loop_expr
                     finally
                         if $job_sym.total !== nothing && $job_sym.state < $job_sym.total
                             Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)
@@ -149,6 +159,19 @@ macro progress(args...)
     bind_assignment = opts[:bind] !== nothing ?
         :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
 
+    loop_expr = opts[:threads] ? quote
+        Base.Threads.@threads for $var in $iter_sym
+            $new_body
+            Progbiotic.update!($pbar_sym, $job_sym)
+        end
+    end : quote
+        for $var in $iter_sym
+            $new_body
+            Progbiotic.update!($pbar_sym, $job_sym)
+        end
+    end
+
+
     extra_kws = _extract_extra_kws(opts)
 
     transformed = quote
@@ -165,10 +188,7 @@ macro progress(args...)
                 )
                 $bind_assignment
                 try
-                    for $var in $iter_sym
-                        $new_body
-                        Progbiotic.update!($pbar_sym, $job_sym)
-                    end
+                    $loop_expr
                 finally
                     if $job_sym.total !== nothing && $job_sym.state < $job_sym.total
                         Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)

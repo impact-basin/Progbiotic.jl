@@ -221,15 +221,16 @@ end
 Updates a specific job's progress in the tree and refreshes the gutter display.
 """
 function update!(pbar::ProgBar, job::ProgJob, new::Union{Int, Nothing} = nothing)
-    @lock job.lock begin
+    completed = @lock job.lock begin
         if isnothing(new)
             job.state += 1
         else
             job.state = new
         end
-        # Record completion timestamp on first completion
-        if job.total !== nothing && job.state >= job.total && !haskey(pbar.
-completed_at, job)
+        job.total !== nothing && job.state >= job.total
+    end
+    completed && @lock pbar.lock begin
+        if !haskey(pbar.completed_at, job)
             pbar.completed_at[job] = time()
         end
     end

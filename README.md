@@ -1,4 +1,4 @@
-# ProgBiotic.jl
+# Progbiotic.jl: neat progress bars.
 
 This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM and macro interfaces.
 
