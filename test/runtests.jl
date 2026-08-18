@@ -1,7 +1,7 @@
-using ProgBiotic
+using Progbiotic
 using Test
 
-@testset "ProgBiotic.jl" begin
+@testset "Progbiotic.jl" begin
     @testset "ProgJob standalone" begin
         job = ProgJob("Test standalone"; total=10, theme=AMBER)
         @test job.total == 10

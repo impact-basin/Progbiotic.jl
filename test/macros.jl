@@ -1,4 +1,4 @@
-using ProgBiotic
+using Progbiotic
 
 # Subroutine receiving the bound context
 function subtask_with_pbar_context(ctx)
@@ -104,9 +104,12 @@ end
 
 
 # Outer loop is the root of the tree (rendered flush at column 0)
-@progress "Data Ingestion Pipeline" for phase in 1:2
-    @progress "Reading files" for file in 1:5
+@progress "Data Ingestion Pipeline" for phase in 1:3
+    @progress "Reading files, phase $phase" for file in 1:5
         sleep(0.02)
+        @progress "Parsing file $file" for i=1:10
+            sleep(0.05)
+        end
     end
 end
 
@@ -121,4 +124,10 @@ end
 
 @progress "Downloading weights" for i in 1:100
     sleep(0.01)
+end
+
+@progress "Long job!" for i in 1:30
+    @progress "Short job $(i)!" vanish_timeout=2.0 for j in 1:10
+        sleep(0.1)
+    end
 end

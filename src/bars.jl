@@ -1,4 +1,3 @@
-
 mutable struct ProgBar
     title       :: String
     lock        :: ReentrantLock

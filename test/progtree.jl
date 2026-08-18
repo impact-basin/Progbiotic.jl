@@ -1,4 +1,4 @@
-using ProgBiotic
+using Progbiotic
 
 pbar = ProgBar("Data Pipeline & Model Training"; style=:round)
 

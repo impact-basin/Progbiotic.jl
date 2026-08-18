@@ -1,4 +1,4 @@
-using ProgBiotic
+using Progbiotic
 
 duration_str(1)
 duration_str(10)

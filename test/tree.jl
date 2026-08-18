@@ -1,4 +1,4 @@
-using ProgBiotic
+using Progbiotic
 
 sample_data = Dict(
     "src" => Dict(

@@ -40,7 +40,7 @@ function _parse_progress_args(args)
     res = Dict{Symbol, Any}(
         :bind           => nothing,
         :desc           => "",
-        :theme          => :(ProgBiotic.AMBER),
+        :theme          => :(Progbiotic.AMBER),
         :title          => "",
         :vanish         => nothing,
         :vanish_timeout => nothing,
@@ -80,13 +80,13 @@ function _transform_progress_ast(expr, pbar_sym, parent_job_sym)
             new_body = _transform_progress_ast(body, pbar_sym, job_sym)
 
             bind_assignment = opts[:bind] !== nothing ?
-                :($(opts[:bind]) = ProgBiotic.ProgContext($pbar_sym, $job_sym)) : :()
+                :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
 
             extra_kws = _extract_extra_kws(opts)
 
             return quote
                 let $iter_sym = $(iter)
-                    $job_sym = ProgBiotic.add_job!(
+                    $job_sym = Progbiotic.add_job!(
                         $pbar_sym,
                         $iter_sym;
                         parent = $parent_job_sym,
@@ -98,11 +98,11 @@ function _transform_progress_ast(expr, pbar_sym, parent_job_sym)
                     try
                         for $var in $iter_sym
                             $new_body
-                            ProgBiotic.update!($pbar_sym, $job_sym)
+                            Progbiotic.update!($pbar_sym, $job_sym)
                         end
                     finally
                         if $job_sym.total !== nothing && $job_sym.state < $job_sym.total
-                            ProgBiotic.update!($pbar_sym, $job_sym, $job_sym.total)
+                            Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)
                         end
                     end
                 end
@@ -147,15 +147,15 @@ macro progress(args...)
     new_body = _transform_progress_ast(body, pbar_sym, job_sym)
 
     bind_assignment = opts[:bind] !== nothing ?
-        :($(opts[:bind]) = ProgBiotic.ProgContext($pbar_sym, $job_sym)) : :()
+        :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
 
     extra_kws = _extract_extra_kws(opts)
 
     transformed = quote
-        $pbar_sym = ProgBiotic.ProgBar($(opts[:title]))
-        ProgBiotic.with_tree_gutter($pbar_sym) do
+        $pbar_sym = Progbiotic.ProgBar($(opts[:title]))
+        Progbiotic.with_tree_gutter($pbar_sym) do
             let $iter_sym = $(iter)
-                $job_sym = ProgBiotic.add_job!(
+                $job_sym = Progbiotic.add_job!(
                     $pbar_sym,
                     $iter_sym;
                     parent = nothing,
@@ -167,11 +167,11 @@ macro progress(args...)
                 try
                     for $var in $iter_sym
                         $new_body
-                        ProgBiotic.update!($pbar_sym, $job_sym)
+                        Progbiotic.update!($pbar_sym, $job_sym)
                     end
                 finally
                     if $job_sym.total !== nothing && $job_sym.state < $job_sym.total
-                        ProgBiotic.update!($pbar_sym, $job_sym, $job_sym.total)
+                        Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)
                     end
                 end
             end

@@ -7,6 +7,7 @@ mutable struct ProgJob{I}
     state       :: Int
     total       :: Union{Int, Nothing}
     start       :: Float64
+    finish      :: Float64
     iter        :: I
     theme       :: Theme
     dt          :: Float64
@@ -22,7 +23,7 @@ mutable struct ProgJob{I}
         io::IO = stdout                                                              
     )                                                                                
         new{Nothing}(                                                                
-            ReentrantLock(), desc, 0, total, time(),                                 
+            ReentrantLock(), desc, 0, total, time(), 0.0,                                 
             nothing, theme, dt, 0.0, io                                              
         )                                                                            
     end                                                                              
@@ -38,7 +39,7 @@ mutable struct ProgJob{I}
     ) where I                                                                        
         tot = total !== nothing ? total : try length(iter) catch; nothing end        
         new{I}(                                                                      
-            ReentrantLock(), desc, 0, tot, time(),                                   
+            ReentrantLock(), desc, 0, tot, time(), 0.0,                                   
             iter, theme, dt, 0.0, io                                                 
         )                                                                            
     end                                                                              
@@ -220,12 +221,14 @@ Renders the progress job line according to the format:
 """
 function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
     # Thread-safe snapshot of job state
-    desc, state, total, start_time = lock(p.lock) do
-        (p.desc, p.state, p.total, p.start)
+    desc, state, total, start_time, finish_time = lock(p.lock) do
+        (p.desc, p.state, p.total, p.start, p.finish)
     end
 
     now_sec = time()
-    elapsed = max(0.0, now_sec - start_time)
+    elapsed = finish_time ≈ 0.0 ?
+        max(0.0, now_sec - start_time) : 
+        max(0.0, finish_time - start_time)
 
     rate = elapsed > 0 ? (state / elapsed) : 0.0
     rate_str = if rate >= 1_000_000
@@ -250,7 +253,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
     if total === nothing
         # Indeterminate mode (no total known)
         prog_str = string(_ANSI_DIM, "$state units", _ANSI_RESET)
-        eta_str = string(_ANSI_DIM, "(elapsed: ", duration_str(elapsed), ")", _ANSI_RESET)
+        eta_str = string(_ANSI_DIM, "(elapsed: ", duration_str(elapsed, show_ms=true), ")", _ANSI_RESET)
     else
         # Determinate mode
         prog = total > 0 ? (state / total) : 1.0
@@ -259,10 +262,15 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40)
         prog_str = "$bar $(lpad(pct, 3))% ($state/$total)"
 
         if prog >= 1.0
-            eta_str = string(_ANSI_DIM, "done in ", duration_str(elapsed, show_ms = true), _ANSI_RESET)
+            finish_time ≈ 0 && @lock p.lock begin
+                finish_time = time()
+                p.finish = finish_time
+            end
+            elapsed = max(0.0, finish_time - start_time)
+            eta_str = string(_ANSI_DIM, "done in ", duration_str(finish_time - start_time, show_ms = true), _ANSI_RESET)
         elseif prog > 0.0
             eta_sec = (1.0 - prog) * (elapsed / prog)
-            eta_str = string(_ANSI_DIM, "ETA: ", duration_str(eta_sec), _ANSI_RESET)
+            eta_str = string(_ANSI_DIM, "ETA: ", duration_str(eta_sec, show_ms = true), _ANSI_RESET)
         else
             eta_str = string(_ANSI_DIM, "ETA: N/A", _ANSI_RESET)
         end
