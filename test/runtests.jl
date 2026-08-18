@@ -70,4 +70,10 @@ using Test
         @test counter == 2
         @test sub_counter == 6
     end
+
+    include("threads.jl")
+    include("macros.jl")
+    include("progtree.jl")
+    include("progressbar.jl")
 end
+

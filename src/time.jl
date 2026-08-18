@@ -3,9 +3,9 @@ function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = fal
         return "N/A"
     elseif isinf(seconds)
         return seconds > 0 ? "∞" : "-∞"
-    elseif seconds < 0
-        return "-" * format_duration(-seconds; compact = compact, show_ms = show_ms)
     end
+    # No branch for negative seconds: durations are never negative (callers
+    # clamp elapsed/ETA values to >= 0 before formatting).
     # Handle sub-second intervals if requested
     if show_ms && seconds < 1.0
         if seconds < 1e-3
