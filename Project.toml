@@ -1,6 +1,6 @@
 name = "Progbiotic"
 uuid = "fd93e9f9-5ff4-4e8b-9dd3-c466c8f67570"
-version = "0.8.0"
+version = "0.8.1"
 authors = ["Henry Eshbaugh <henry.eshbaugh@physics.ox.ac.uk>"]
 
 [deps]
