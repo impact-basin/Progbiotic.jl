@@ -2,6 +2,24 @@
 
 This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM and macro interfaces.
 
+Here's a quick example:
+
+```julia
+@progress "doing something" for i=1:10
+    @progress "doing something else; i=$i" for j=1:10
+        sleep(0.05)
+    end
+    @progress "doing something 2; i=$i" for j=1:10
+        sleep(0.05)
+    end
+end
+```
+
+That looks like this:
+
+<img width="2392" height="325" alt="image" src="https://github.com/user-attachments/assets/eb22dd24-8704-4246-9271-79bf2d7194cc" />
+
+
 ## Usage (a la TQDM)
 
 ```julia
