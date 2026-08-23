@@ -121,7 +121,7 @@ end
 
 ## Short form options
 
-The `@progress` keyword options accept short aliases:
+The `@progress` keyword options accept short aliases. This is so my fingers don't get tired :-).
 
 | Short form   | Full form        | Meaning                                        |
 |--------------|------------------|------------------------------------------------|
