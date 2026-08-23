@@ -75,5 +75,6 @@ using Test
     include("macros.jl")
     include("progtree.jl")
     include("progressbar.jl")
+    include("tree.jl")
 end
 

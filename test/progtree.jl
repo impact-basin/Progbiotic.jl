@@ -83,4 +83,32 @@ using Test
         end
         @test root.state == 2
     end
+
+    @testset "final_depth collapse" begin
+        pbar = ProgBar("Pipeline"; final_depth=1)
+        @test pbar.final_depth == 1
+        root = add_job!(pbar, "Stage"; total=2)
+        for f in ("a.csv", "b.csv")
+            job = add_job!(pbar, f; parent=root, total=3)
+            for _ in 1:3
+                update!(pbar, job)
+            end
+            update!(pbar, root)
+        end
+
+        # depth 0: title + root only
+        d0 = render_progbar_tree(pbar; collapse_completed=true, final_depth=0)
+        @test length(split(chomp(d0), "\n")) == 2
+        @test occursin("Stage", d0)
+        @test !occursin("a.csv", d0)
+
+        # depth 1 (also the pbar default): title + root + direct children
+        d1 = render_progbar_tree(pbar; collapse_completed=true)
+        @test length(split(chomp(d1), "\n")) == 4
+        @test occursin("a.csv", d1)
+
+        # depth 2: same tree (no grandchildren to retain)
+        d2 = render_progbar_tree(pbar; collapse_completed=true, final_depth=2)
+        @test length(split(chomp(d2), "\n")) == 4
+    end
 end

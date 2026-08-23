@@ -1,3 +1,11 @@
+"""
+    duration_str(seconds; compact=true, show_ms=false) -> String
+
+Formats a duration in seconds as a human-readable string, e.g. `duration_str(95)`
+gives `"1m 35 s"` (or `"1 minute, 35 seconds"` with `compact=false`). With
+`show_ms=true`, sub-second and sub-hour durations include milliseconds; `Inf` and
+`NaN` render as `"∞"` and `"N/A"`.
+"""
 function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = false)
     if isnan(seconds)
         return "N/A"
@@ -27,7 +35,7 @@ function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = fal
     parts = String[]
 
     if days > 0
-        push!(parts, compact ? "$(days)d" : 
+        push!(parts, compact ? "$(days)d" :
             "$(days) day" * (days == 1 ? "" : "s"))
     end
     if hours > 0 || days > 0
@@ -37,7 +45,7 @@ function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = fal
         push!(parts, compact ? "$(mins)m" : "$(mins) minute" * (mins == 1 ? "" : "s"))
     end
 
-# Include milliseconds if under an hour and show_ms is true
+    # Include milliseconds if under an hour and show_ms is true
     if show_ms && ms > 0 && days == 0 && hours == 0
         sec_val = secs + ms / 1000.0
         push!(parts, compact ? "$(round(sec_val,digits = 2))s" : "$(round(sec_val, digits=2)) seconds")

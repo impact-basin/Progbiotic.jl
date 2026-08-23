@@ -1,9 +1,66 @@
-struct Theme
-    name     :: Symbol
+"""
+    Theme(name, palette, barunits, empty, spinner[, caps, head])
+
+Describes the look of a progress bar: a `palette` of colors (interpolated along
+the bar), the `barunits` stipple glyphs (low to high fill), the `empty` glyph,
+the `spinner` frames, optional `caps` flanking the bar, and an optional `head`
+glyph marking the tip of an in-progress bar.
+
+Use the [`Theme`](@ref) copy constructor to mix elements of the
+built-in themes (e.g. `Theme(AMBER; spinner=EMERALD.spinner)`).
+"""
+struct Theme    name     :: Symbol
     palette  :: Vector{Color}
     barunits :: Vector{Char}
     empty    :: Char
     spinner  :: Vector{Char}
+    caps     :: Tuple{Char, Char}
+    head     :: Union{Nothing, Char}
+    function Theme(name::Symbol, palette, barunits, empty, spinner,
+                   caps::Tuple{Char, Char} = (' ', ' '),
+                   head::Union{Nothing, Char} = nothing)
+        new(name, palette, barunits, empty, spinner, caps, head)
+    end
+end
+
+"""
+    Theme(base::Theme; palette=base.palette, barunits=base.barunits, empty=base.empty, spinner=base.spinner, caps=base.caps, head=base.head)
+
+Builds a new theme by mixing elements of an existing one, e.g.
+
+    Theme(AMBER; spinner=EMERALD.spinner)                 # AMBER palette, EMERALD spinner
+    Theme(OCEAN; barunits=MONOCHROME.barunits, empty='·') # swap the bar glyphs
+    Theme(AMBER; caps="[]", head='>')                     # frame the bar and tip it
+"""
+function Theme(base::Theme;
+               palette  :: Vector{Color} = base.palette,
+               barunits :: Vector{Char}  = base.barunits,
+               empty    :: Char          = base.empty,
+               spinner  :: Vector{Char}  = base.spinner,
+               caps = base.caps,
+               head = base.head)
+    return Theme(base.name, palette, barunits, empty, spinner, _as_caps(caps), _as_head(head))
+end
+
+# Normalises a `caps` override (a 2-char string like "[]" or a Char pair) to a pair.
+_as_caps(caps) = caps isa AbstractString ? (first(caps), last(caps)) : (caps[1], caps[2])
+# Normalises a `head` override (a char or single-char string) to a Char.
+_as_head(head) = head isa AbstractString ? first(head) : head
+
+# Merges per-job style overrides (spinner/barunits/empty/caps/head) into a theme;
+# returns the theme unchanged when no override is given.
+function _apply_style(t::Theme, spinner, barunits, empty, caps, head)
+    if spinner === nothing && barunits === nothing && empty === nothing &&
+       caps === nothing && head === nothing
+        return t
+    end
+    return Theme(t;
+        spinner  = spinner  === nothing ? t.spinner  : (spinner  isa AbstractString ? collect(spinner)  : spinner),
+        barunits = barunits === nothing ? t.barunits : (barunits isa AbstractString ? collect(barunits) : barunits),
+        empty    = empty    === nothing ? t.empty    : (empty    isa AbstractString ? first(empty)     : empty),
+        caps     = caps     === nothing ? t.caps     : _as_caps(caps),
+        head     = head     === nothing ? t.head     : _as_head(head),
+    )
 end
 
 """Neon cyberpunk: cyan → magenta → green → amber."""
@@ -136,7 +193,7 @@ const SAKURA = Theme(
     [colorant"#800F2F", colorant"#C9184A",
 colorant"#FF4D6D", colorant"#FF758F", colorant"#FFCCD5"],
     ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
-    ['❀', '✿', '✾', '✽'], 
+    ['❀', '✿', '✾', '✽'],
 )
 
 """Warm vintage retro: earthy rust, ochre yellow, olive,
@@ -316,4 +373,73 @@ const VAPORWAVE = Theme(
 colorant"#05FFA1", colorant"#B967FF"],
     [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'], ' ',
     ['◐', '◓', '◑', '◒'],
+)
+
+"""Golden honey: deep amber to luminous gold."""
+const HONEY = Theme(
+    :honey,
+    [colorant"#B45309", colorant"#D97706",
+     colorant"#F59E0B", colorant"#FBBF24", colorant"#FDE68A"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], '·',
+    ['◐', '◓', '◑', '◒'],
+    # ('▏', '▕'),
+)
+
+"""Burning coals: ember red-orange to bright gold, with a spark at the tip."""
+const EMBER = Theme(
+    :ember,
+    [colorant"#7C2D12", colorant"#C2410C",
+     colorant"#EA580C", colorant"#F97316", colorant"#FBBF24"],
+    ['░', '▒', '▓', '█'], '░',
+    ['✦', '✧', '★', '☆'],
+    # (' ', ' '),
+    # '✦',
+)
+
+"""Bright tangerine: juicy orange zest."""
+const TANGERINE = Theme(
+    :tangerine,
+    [colorant"#9A3412", colorant"#EA580C",
+     colorant"#FB923C", colorant"#FDBA74"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], ' ',
+    ['◉', '◎'],
+)
+
+"""Metallic copper: brass instrument-panel warmth, framed with brackets."""
+const COPPER = Theme(
+    :copper,
+    [colorant"#6B3A1F", colorant"#9C5A2F",
+     colorant"#C77B3F", colorant"#E09F5C", colorant"#F2C58D"],
+    ['░', '▒', '▓', '█'], '░',
+    ['⣾', '⣽', '⣻', '⢿', '⡿', '⣟', '⣯', '⣷'],
+    # ('[', ']'),
+)
+
+"""Marigold: saffron to soft butter yellow."""
+const MARIGOLD = Theme(
+    :marigold,
+    [colorant"#A16207", colorant"#CA8A04",
+     colorant"#EAB308", colorant"#FACC15", colorant"#FDE047"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], '·',
+    ['◐', '◓', '◑', '◒'],
+)
+
+"""Warm dusk: the last oranges of sunset."""
+const SUNSET = Theme(
+    :sunset,
+    [colorant"#9A3412", colorant"#C2410C",
+     colorant"#F97316", colorant"#FB923C", colorant"#FBBF24", colorant"#FDBA74"],
+    [' ', '▂', '▃', '▄', '▅', '▆', '▇', '█'], ' ',
+    ['◐', '◓', '◑', '◒'],
+)
+
+"""High-contrast phosphor amber: a brighter, blockier AMBER for old CRT vibes."""
+const AMBER_GLOW = Theme(
+    :amber_glow,
+    [colorant"#FF7A00", colorant"#FF9500",
+     colorant"#FFB300", colorant"#FFD000"],
+    ['▏', '▎', '▍', '▌', '▋', '▊', '▉', '█'], '·',
+    ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+    # ('◢', '◣'),
+    # '◈',
 )

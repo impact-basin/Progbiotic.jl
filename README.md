@@ -61,8 +61,53 @@ end
     end
 end
 
-# Supports multithreading!
-@progress "Loop 1" threads=true for i = 1:3
+# Group phases with a plain begin/end block (the block itself becomes a job)
+@progress "Ingest" begin
+    @progress "Reading" for file in 1:5
+        sleep(0.01)
+    end
+    @progress "Cleaning" for chunk in 1:3
+        sleep(0.01)
+    end
+end
+
+# Sequential subtasks: a bare @progress "desc" statement (no loop or block) marks a
+# step. Each step starts at 0%, completes when the next one is registered, and
+# stays visible, so the tree shows "foo" with one child per step.
+@progress "foo" d=1 begin
+    @progress "job 1"
+    sleep(0.5)
+    @progress "job 2"
+    sleep(0.5)
+    @progress "job 3"
+    sleep(0.5)
+end
+
+# Passing a context to subroutines: bind a context with (ctx => ...) or a bare
+# symbol, pass it to helper functions, and thread it back in with `with=ctx`.
+# The bound context automatically tracks the innermost running job and is
+# restored afterwards.
+function subtask(ctx, n)
+    @progress with=ctx "working..." for k in 1:n
+        sleep(0.01)
+    end
+end
+
+@progress ctx "outer..." for i in 1:10
+    @progress "inner" for j in 1:10
+        subtask(ctx, i)          # ctx already points at "inner" here
+    end
+end
+
+# Keep 1 level of children in the final (collapsed) render
+@progress "Training" final_depth=1 for epoch in 1:10
+    @progress "Batch $epoch" for b in 1:100
+        sleep(0.001)
+    end
+end
+
+# Supports multithreading! (wrap the loop with Threads.@threads)
+@progress "Loop 1" Base.Threads.@threads for i = 1:3
     @progress "Loop 2, i=$i" for j = 1:5
         @progress "Micro-batch" for k = 1:10
             sleep(0.05)
@@ -71,12 +116,54 @@ end
 end
 ```
 
-# Caveat emptor! AI slop.
+## Short form options
 
-After the State of Julia keynote, where both Keno Fischer and Tim Holy mentioned that they found AI useful, it was time to take AI for a test-drive.
+The `@progress` keyword options accept short aliases:
 
-This package has scratched a low-priority itch I've had for a while, but haven't had the time to implement myself. I suppose that's good.
+| Short form   | Full form        | Meaning                                        |
+|--------------|------------------|------------------------------------------------|
+| `d=1`        | `final_depth=1`  | keep 1 level of children in the final render   |
+| `v=1.2`      | `vanish_timeout=1.2` | finished bars linger 1.2s                  |
+| `v=false`    | `vanish=false`   | keep bars on screen (never vanish)             |
+| `t=OCEAN`    | `theme=OCEAN`    | use the OCEAN theme                            |
 
-On the other hand, the quality of the source code is lower than what I'd desire; perhaps some work over a free weekend will sort it out.
+`v` can be set to a number or a boolean. A number sets the vanish timeout in seconds and a boolean
+switches vanishing on/off.
 
-Overall, AI-assisted programming seems useful for low-criticality tasks. Interesting!
+An example usage:
+
+```julia
+@progress "Foo" d=1 v=0.8 for foo in 1:10
+    @progress "Bar $foo" for bar in 1:100
+        sleep(0.001)
+    end
+end
+```
+
+# Notes
+
+- Completed bars vanish from the tree shortly after finishing by default.
+  Pass `vanish=false` to keep every bar on screen or `vanish_timeout=<seconds>` to tune.
+  These options are inherited by nested `@progress` levels. `v=` is a shorthand for both.
+- Once the tree completes, the bar collapses to the top-level state.
+  `final_depth=N` keeps `N` levels of children in the final render (0 = summary
+  only, 1 = also its direct children, ...). Children within the retained depth are
+  kept on screen past their vanish timeouts.
+- Bare `@progress "desc"` statements are "milestones", which report elapsed time.
+  A `@progress begin ... end` block with milestones has a total equal to the number
+  of milestones, and its progress advances as each milestone completes.
+- `@progress ctx "desc"` binds `ctx` to the new job. This can be passed to helper
+  functions, which can register their own progress: `@progress "desc" with=ctx for ...`.
+
+# AI use.
+
+There were a few aspects of the progress bar libraries in the ecosystem that I wanted to address.
+There was no thread-safe, multi-job option. Being able to pass progress bar context around also
+ranked highly on my scratch-an-itch list. Unfortunately, as much as I would have liked to write this
+all myself, I did not have time to.
+
+So, I leaned on AI fairly heavily for this. I wrote test cases off desired use and the first-draft code, then let the AI rip.
+
+There are a few down-the-line packages from me which will depend on this, which don't use AI - hence the registration in General.
+
+However, I _am_ committed to maintaining this (as I'm using this myself) - if you find this library useful, but find issues, please do raise them, and I'll get to them as quickly as I can.

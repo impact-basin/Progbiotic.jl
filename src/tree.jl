@@ -80,7 +80,7 @@ end
     with_tree_gutter(f, tree_data; style=:round, io=stdout)
 
 Pins the tree at the bottom of the terminal as a fixed gutter.
-All `println()` and standard output inside the `do` block will scroll 
+All `println()` and standard output inside the `do` block will scroll
 naturally above the tree.
 """
 function with_tree_gutter(f::Function, dict::AbstractDict; io::IO = stdout, kwargs...)
