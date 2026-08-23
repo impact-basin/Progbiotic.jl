@@ -2,6 +2,24 @@
 
 This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM and macro interfaces.
 
+Here's a quick example:
+
+```julia
+@progress "doing something" for i=1:10
+    @progress "doing something else; i=$i" for j=1:10
+        sleep(0.05)
+    end
+    @progress "doing something 2; i=$i" for j=1:10
+        sleep(0.05)
+    end
+end
+```
+
+That looks like this:
+
+<img width="2392" height="325" alt="image" src="https://github.com/user-attachments/assets/eb22dd24-8704-4246-9271-79bf2d7194cc" />
+
+
 ## Usage (a la TQDM)
 
 ```julia
@@ -45,23 +63,13 @@ end
 end
 
 # Provides an explicit header title for the whole tree
-@progress title="Model Training Pipeline" theme=OCEAN "Epochs" for epoch in 1:3
-    @progress ("Epoch $epoch Batches", CYBERPUNK) for batch in 1:20
+@progress title="Model Training Pipeline"  "Epochs" for epoch in 1:3
+    @progress "Epoch $epoch Batches" for batch in 1:20
         sleep(0.01)
     end
 end
 
-
-# 3-level deep nested progress tree with vanishing micro-batch bars.
-@progress ("Outer Pipeline", OCEAN) for i = 1:3
-    @progress (stage => ("Stage $i", CYBERPUNK)) for j = 1:5
-        @progress "Micro-batch" for k = 1:10
-            sleep(0.005)
-        end
-    end
-end
-
-# Group phases with a plain begin/end block (the block itself becomes a job)
+# Group phases with a plain begin/end block
 @progress "Ingest" begin
     @progress "Reading" for file in 1:5
         sleep(0.01)
@@ -71,9 +79,7 @@ end
     end
 end
 
-# Sequential subtasks: a bare @progress "desc" statement (no loop or block) marks a
-# step. Each step starts at 0%, completes when the next one is registered, and
-# stays visible, so the tree shows "foo" with one child per step.
+# Sequential subtasks progress.
 @progress "foo" d=1 begin
     @progress "job 1"
     sleep(0.5)
@@ -83,10 +89,7 @@ end
     sleep(0.5)
 end
 
-# Passing a context to subroutines: bind a context with (ctx => ...) or a bare
-# symbol, pass it to helper functions, and thread it back in with `with=ctx`.
-# The bound context automatically tracks the innermost running job and is
-# restored afterwards.
+# Passing a progress context to subroutines.
 function subtask(ctx, n)
     @progress with=ctx "working..." for k in 1:n
         sleep(0.01)
@@ -160,9 +163,7 @@ end
 There were a few aspects of the progress bar libraries in the ecosystem that I wanted to address.
 There was no thread-safe, multi-job option. Being able to pass progress bar context around also
 ranked highly on my scratch-an-itch list. Unfortunately, as much as I would have liked to write this
-all myself, I did not have time to.
-
-So, I leaned on AI fairly heavily for this. I wrote test cases off desired use and the first-draft code, then let the AI rip.
+all myself, I did not have time to. So, I leaned on AI for this.
 
 There are a few down-the-line packages from me which will depend on this, which don't use AI - hence the registration in General.
 
