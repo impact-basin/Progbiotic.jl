@@ -41,13 +41,13 @@ end
 
 # Define a custom visual pipeline
 my_layout = [
-    SpinnerColumn(:dots),
-    TextColumn("{desc}"),
-    BarColumn(fill='█', empty='░', width=30),
-    PercentageColumn(),
-    RateColumn(unit="it/s"),
-    ETAColumn(),
-    PostfixColumn()
+    Spinner(:dots),
+    Tag("{desc}"),
+    Bar(fill='█', empty='░', width=30),
+    Percent(),
+    Rate(unit="it/s"),
+    Eta(),
+    Postfix()
 ]
 
 p = Progress(100; layout=my_layout, desc="Custom Pipeline", vanish=0.0)

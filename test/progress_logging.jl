@@ -141,7 +141,7 @@ end
         @test length(entries) == 1
         @test entries[1].message == "captured inside the scope"
         @test entries[1].level == Logging.Info
-        @test occursin("loss=0.5", render_column(PostfixColumn(), bar.state))
+        @test occursin("loss=0.5", render_column(Postfix(), bar.state))
         # the target is restored once the scope exits
         @test current_progress_target() === nothing
     end
@@ -216,7 +216,7 @@ end
             @info "pl" progress = 0.5
         end
         @test bar.state.current[] == 5
-        @test occursin("progress=0.5", render_column(PostfixColumn(), bar.state))
+        @test occursin("progress=0.5", render_column(Postfix(), bar.state))
         # a progress record is state, not history: it produces no log line
         @test isempty(active_logs(bar))
 

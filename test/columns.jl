@@ -18,115 +18,124 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
 @testset "columns.jl" begin
     @testset "AbstractColumn interface" begin
-        @test SpinnerColumn() isa AbstractColumn
-        @test BarColumn() isa AbstractColumn
-        @test PercentageColumn() isa AbstractColumn
-        @test RateColumn() isa AbstractColumn
-        @test ETAColumn() isa AbstractColumn
-        @test PostfixColumn() isa AbstractColumn
-        @test TextColumn() isa AbstractColumn
+        @test Spinner() isa AbstractColumn
+        @test Bar() isa AbstractColumn
+        @test Percent() isa AbstractColumn
+        @test Rate() isa AbstractColumn
+        @test Eta() isa AbstractColumn
+        @test Postfix() isa AbstractColumn
+        @test Tag() isa AbstractColumn
 
         @test render_column(TestFixedColumn(), aged_state()) == "fixed"
         @test render_column(TestFixedColumn(), aged_state()) isa String
     end
 
-    @testset "SpinnerColumn" begin
+    @testset "Spinner" begin
         state = aged_state()
-        spinner = SpinnerColumn(:dots)
-        @test spinner.style == :dots
+        spinner = Spinner(:dots)
+        @test isempty(spinner.palette)   # unstyled unless a theme supplies one
         @test length(spinner.frames) == 10
         @test render_column(spinner, state) in spinner.frames
 
-        line = SpinnerColumn(:line)
+        line = Spinner(:line)
         @test line.frames == ["-", "\\", "|", "/"]
         @test render_column(line, state) in line.frames
 
-        @test render_column(SpinnerColumn(:clock), state) in SpinnerColumn(:clock).frames
-        @test_throws ErrorException SpinnerColumn(:nope)
+        @test render_column(Spinner(:clock), state) in Spinner(:clock).frames
+        @test_throws ProgbioticError Spinner(:nope)
     end
 
-    @testset "TextColumn templates" begin
+    @testset "Tag templates" begin
         state = aged_state(total = 200, desc = "Training", current = 50)
-        @test render_column(TextColumn("{desc}"), state) == "Training"
-        @test render_column(TextColumn("{n}/{total}"), state) == "50/200"
-        @test render_column(TextColumn("{pct}%"), state) == "25.0%"
-        @test render_column(TextColumn("elapsed {elapsed}"), state) == "elapsed 00:00:10"
-        @test render_column(TextColumn("no placeholders"), state) == "no placeholders"
-        @test render_column(TextColumn("{unknown}"), state) == "{unknown}"
+        @test render_column(Tag("{desc}"), state) == "Training"
+        @test render_column(Tag("{n}/{total}"), state) == "50/200"
+        @test render_column(Tag("{pct}%"), state) == "25.0%"
+        @test render_column(Tag("elapsed {elapsed}"), state) == "elapsed 00:00:10"
+        @test render_column(Tag("no placeholders"), state) == "no placeholders"
+        @test render_column(Tag("{unknown}"), state) == "{unknown}"
 
         indeterminate = aged_state(total = nothing, desc = "watching")
-        @test render_column(TextColumn("{desc}"), indeterminate) == "watching"
-        @test render_column(TextColumn("{total}"), indeterminate) == ""
+        @test render_column(Tag("{desc}"), indeterminate) == "watching"
+        @test render_column(Tag("{total}"), indeterminate) == ""
     end
 
-    @testset "BarColumn" begin
+    @testset "Bar" begin
         half = aged_state(total = 200, current = 100)
-        bar = render_column(BarColumn(fill = '#', empty = '-', width = 10), half)
-        @test bar == "#####-----"
-        @test length(render_column(BarColumn(fill = '#', empty = '-', width = 10),
-                                   aged_state(total = 4, current = 0))) == 10
-        @test render_column(BarColumn(fill = '#', empty = '-', width = 10),
-                            aged_state(total = 4, current = 4)) == "##########"
+        plain = Bar(fill = '#', empty = '-', width = 10)
+
+        # an unstyled bar is plain text: no palette means no escape sequences, so
+        # a bar drawn into a pipe or a file carries no terminal control at all
+        bar = render_column(plain, half)
+        @test bar == " #####----- "           # the flanking spaces are the default caps
+        @test !occursin('\e', bar)
+
+        @test render_column(plain, aged_state(total = 4, current = 0)) == " ---------- "
+        @test render_column(plain, aged_state(total = 4, current = 4)) == " ########## "
 
         # the default glyphs are the documented ones
-        default_bar = render_column(BarColumn(), half)
-        @test length(default_bar) == 30
+        default_bar = render_column(Bar(), half)
         @test count(==('█'), default_bar) == 15
         @test count(==('░'), default_bar) == 15
 
         # keyword and positional construction agree
-        @test BarColumn('#', '-', 10).width == 10
-        @test BarColumn(fill = '#', empty = '-', width = 10).fill == '#'
-        @test BarColumn().width == 30
+        @test Bar('#', '-', 10).width == 10
+        @test Bar(fill = '#', empty = '-', width = 10).units == ['#']
+        @test Bar().width == 30
 
-        # an indeterminate bar shows a moving block of the full track width
-        marquee = render_column(BarColumn(fill = '#', empty = '-', width = 20),
-                                aged_state(total = nothing))
-        @test length(marquee) == 20
-        @test occursin('#', marquee)
+        # a themed bar carries a palette, and so is coloured and reset
+        themed = render_column(Bar(AMBER.barunits, AMBER.empty, AMBER.palette,
+                                   AMBER.caps, AMBER.head; width = 10), half)
+        @test occursin("\e[38;2;", themed)
+        @test occursin("\e[0m", themed)
+        @test occursin("█", strip_ansi(themed))
+
+        # an indeterminate bar sweeps a block of the full track
+        marquee = strip_ansi(render_column(Bar(fill = '#', empty = '-', width = 20),
+                                           aged_state(total = nothing)))
+        @test length(marquee) == 22           # 20 + the two caps
         @test count(==('#'), marquee) == 5
     end
 
-    @testset "PercentageColumn" begin
-        @test render_column(PercentageColumn(), aged_state(total = 200, current = 90)) == "45.0%"
-        @test render_column(PercentageColumn(0), aged_state(total = 3, current = 1)) == "33%"
-        @test render_column(PercentageColumn(3), aged_state(total = 3, current = 1)) == "33.333%"
-        @test render_column(PercentageColumn(), aged_state(total = nothing)) == ""
+    @testset "Percent" begin
+        @test render_column(Percent(), aged_state(total = 200, current = 90)) == "45.0%"
+        @test render_column(Percent(0), aged_state(total = 3, current = 1)) == "33%"
+        @test render_column(Percent(3), aged_state(total = 3, current = 1)) == "33.333%"
+        @test render_column(Percent(), aged_state(total = nothing)) == ""
     end
 
-    @testset "RateColumn" begin
+    @testset "Rate" begin
         # 100 items in 10 seconds is ten items a second
-        @test render_column(RateColumn(), aged_state(total = 200, current = 100)) == "10.0 it/s"
-        @test render_column(RateColumn(unit = "rows/s"),
+        @test render_column(Rate(), aged_state(total = 200, current = 100)) == "10.0 it/s"
+        @test render_column(Rate(unit = "rows/s"),
                             aged_state(total = 2000, current = 25000)) == "2.5k rows/s"
-        @test render_column(RateColumn(unit = "cells/s"),
+        @test render_column(Rate(unit = "cells/s"),
                             aged_state(total = 2000, current = 25000000)) == "2.5M cells/s"
         # below one item per second the column inverts, which is far easier to read
-        @test render_column(RateColumn(), aged_state(total = 200, current = 5)) == "2.0 s/it"
-        @test render_column(RateColumn(), aged_state(total = 200, current = 0)) == ""
+        @test render_column(Rate(), aged_state(total = 200, current = 5)) == "2.0 s/it"
+        @test render_column(Rate(), aged_state(total = 200, current = 0)) == ""
     end
 
-    @testset "ETAColumn" begin
-        @test render_column(ETAColumn(), aged_state(total = 200, current = 100)) == "ETA 00:00:10"
+    @testset "Eta" begin
+        @test render_column(Eta(), aged_state(total = 200, current = 100)) == "ETA 00:00:10"
         @test occursin(r"^ETA \d{2}:\d{2}:\d{2}$",
-                       render_column(ETAColumn(), aged_state(total = 100, current = 1)))
-        @test render_column(ETAColumn(), aged_state(total = 200, current = 200)) == "ETA 00:00:00"
-        @test render_column(ETAColumn(), aged_state(total = nothing)) == ""
-        @test render_column(ETAColumn(), aged_state(total = 200, current = 0)) == ""
+                       render_column(Eta(), aged_state(total = 100, current = 1)))
+        @test render_column(Eta(), aged_state(total = 200, current = 200)) == "ETA 00:00:00"
+        @test render_column(Eta(), aged_state(total = nothing)) == ""
+        @test render_column(Eta(), aged_state(total = 200, current = 0)) == ""
 
         # more than a day of remaining work still fits the format
-        slow = render_column(ETAColumn(), aged_state(total = 100000, current = 1, elapsed = 100.0))
+        slow = render_column(Eta(), aged_state(total = 100000, current = 1, elapsed = 100.0))
         @test occursin(r"^ETA \d+:\d{2}:\d{2}$", slow)
     end
 
-    @testset "PostfixColumn and set_postfix!" begin
+    @testset "Postfix and set_postfix!" begin
         handle = Progress(100; desc = "metrics", io = IOBuffer(), tty = true,
                           vanish = 0.0, start = false)
         state = handle.ctx.state
-        @test render_column(PostfixColumn(), state) == ""
+        @test render_column(Postfix(), state) == ""
 
         set_postfix!(handle; loss = 0.041, lr = 1e-4)
-        text = render_column(PostfixColumn(), state)
+        text = render_column(Postfix(), state)
         @test text == "[loss=0.041, lr=0.0001]"
         # insertion order is preserved, not dictionary order
         @test startswith(text, "[loss=")
@@ -134,27 +143,28 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
         # values are overwritten, not appended
         set_postfix!(handle; loss = 0.9)
-        @test render_column(PostfixColumn(), state) == "[loss=0.9, lr=0.0001]"
+        @test render_column(Postfix(), state) == "[loss=0.9, lr=0.0001]"
 
         # a custom separator
-        @test occursin("; ", render_column(PostfixColumn("; "), state))
+        @test occursin("; ", render_column(Postfix("; "), state))
 
         # a bare set_postfix! reaches the innermost live bar
         live = Progress(10; desc = "live", io = IOBuffer(), tty = false, vanish = 0.0)
         set_postfix!(; epoch = 3)
-        @test occursin("epoch=3", render_column(PostfixColumn(), live.ctx.state))
+        @test occursin("epoch=3", render_column(Postfix(), live.ctx.state))
         finish!(live; wait = true)
     end
 
     @testset "default_layout and composition" begin
         layout = default_layout()
-        @test layout isa Vector{AbstractColumn}
-        @test any(c -> c isa SpinnerColumn, layout)
-        @test any(c -> c isa BarColumn, layout)
-        @test any(c -> c isa PercentageColumn, layout)
-        @test any(c -> c isa RateColumn, layout)
-        @test any(c -> c isa ETAColumn, layout)
-        @test any(c -> c isa PostfixColumn, layout)
+        @test layout isa Tuple
+        @test any(c -> c isa Spinner, layout)
+        @test any(c -> c isa Bar, layout)
+        @test any(c -> c isa Percent, layout)
+        @test any(c -> c isa Count, layout)
+        @test any(c -> c isa Rate, layout)
+        @test any(c -> c isa Eta, layout)
+        @test any(c -> c isa Postfix, layout)
 
         handle = Progress(200; desc = "composed", io = IOBuffer(), tty = true,
                           vanish = 0.0, start = false)
@@ -171,7 +181,7 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
         @test occursin("[loss=0.25]", frame)
 
         # empty columns are dropped, and the join is a single space
-        layout2 = [TextColumn("{desc}"), PercentageColumn(), PostfixColumn()]
+        layout2 = [Tag("{desc}"), Percent(), Postfix()]
         handle2 = Progress(10; desc = "sparse", layout = layout2, io = IOBuffer(),
                            tty = true, vanish = 0.0, start = false)
         @test render_frame(handle2.ctx) == "sparse 0.0%"
@@ -179,13 +189,13 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
     @testset "the layout from the feature tour" begin
         my_layout = [
-            SpinnerColumn(:dots),
-            TextColumn("{desc}"),
-            BarColumn(fill = '█', empty = '░', width = 30),
-            PercentageColumn(),
-            RateColumn(unit = "it/s"),
-            ETAColumn(),
-            PostfixColumn(),
+            Spinner(:dots),
+            Tag("{desc}"),
+            Bar(fill = '█', empty = '░', width = 30),
+            Percent(),
+            Rate(unit = "it/s"),
+            Eta(),
+            Postfix(),
         ]
         handle = Progress(100; layout = my_layout, desc = "Custom Pipeline",
                           io = IOBuffer(), tty = true, vanish = 0.0, start = false)

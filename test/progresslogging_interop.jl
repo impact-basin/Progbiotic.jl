@@ -17,7 +17,7 @@ import ProgressLogging
             end
         end
         @test bar.state.current[] == 10
-        @test occursin("progress=", render_column(PostfixColumn(), bar.state))
+        @test occursin("progress=", render_column(Postfix(), bar.state))
         # progress records are state, not history
         @test isempty(active_logs(bar))
     end

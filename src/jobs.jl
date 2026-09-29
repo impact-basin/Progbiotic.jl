@@ -191,33 +191,7 @@ function _postfix_suffix(metrics::AbstractDict)
     return string(" [", join((string(k, "=", v) for (k, v) in metrics), ", "), "]")
 end
 
-const _ANSI_RESET = "\e[0m"
-const _ANSI_DIM   = "\e[2m"
-const _ANSI_BOLD  = "\e[1m"
 
-"""Interpolates a color at fractional position t ∈ [0, 1] across the theme palette."""
-function _palette_gradient(palette::AbstractVector{<:Colorant}, t::Float64)
-    isempty(palette) && return ""
-    length(palette) == 1 && return ansi_fg(palette[1])
-
-    # Position along the palette segments
-    scaled = clamp(t, 0.0, 1.0) * (length(palette) - 1)
-    idx = floor(Int, scaled) + 1
-    frac = scaled - floor(scaled)
-
-    if idx >= length(palette)
-        return ansi_fg(palette[end])
-    end
-
-    # Linear interpolation between adjacent palette colors in RGB
-    c1, c2 = RGB(palette[idx]), RGB(palette[idx + 1])
-    interp_c = RGB(
-        red(c1)   + frac * (red(c2)   - red(c1)),
-        green(c1) + frac * (green(c2) - green(c1)),
-        blue(c1)  + frac * (blue(c2)  - blue(c1))
-    )
-    return ansi_fg(interp_c)
-end
 
 """
     _render_bar(prog::Float64, t::Theme; width::Int = 40) -> String
@@ -235,7 +209,7 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
     full_chars = div(total_subunits, k)
     rem_subunits = rem(total_subunits, k)
 
-    fg_color = isempty(t.palette) ? "" : _palette_gradient(t.palette, prog)
+    fg_color = isempty(t.palette) ? "" : palette_gradient(t.palette, prog)
     dim_color = isempty(t.palette) ? _ANSI_DIM : ansi_fg(t.palette[begin])
 
     # Filled portion; a `head` glyph replaces the tip of an in-progress bar

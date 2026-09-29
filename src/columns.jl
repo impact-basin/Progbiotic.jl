@@ -1,22 +1,22 @@
-# Modular progress-bar columns.
+# The pieces a bar's line is built from.
 #
 # Every column is a tiny immutable value implementing
 #
 #     render_column(col::MyColumn, state::BarState) -> String
 #
-# and layouts are just vectors of them, composed left-to-right by the engine.  This
-# replaces the hard-coded single-line format of the original renderer: a user can
-# now build any bar they want out of these pieces, or drop in their own.
+# and a *layout* is a Tuple of them. A tuple rather than a vector: a layout is fixed
+# when the bar is built, and a heterogeneous tuple keeps rendering concretely typed
+# instead of dispatching through Vector{AbstractColumn} on every frame.
 
 # ---------------------------------------------------------------------------
-# Shared formatting helpers
+# Shared formatting
 # ---------------------------------------------------------------------------
 
 """
     _format_hms(seconds) -> String
 
-Format a duration as HH:MM:SS, the format the ETA column uses.  Non-finite inputs
-render as "--:--:--" so the column never changes width mid-run.
+A duration as HH:MM:SS. Non-finite inputs render as "--:--:--" so the column never
+changes width mid-run.
 """
 function _format_hms(seconds::Real)
     (isfinite(seconds) && seconds >= 0) || return "--:--:--"
@@ -29,48 +29,39 @@ end
 """
     _inverse_unit(unit) -> String
 
-Invert a rate unit, so that "it/s" becomes "s/it" when the rate drops below one
-item per second and the column switches to seconds-per-item.
+Invert a rate unit, so "it/s" becomes "s/it" below one item per second.
 """
 function _inverse_unit(unit::AbstractString)
-    if occursin('/', unit)
-        parts = split(unit, '/'; limit = 2)
-        return string(parts[2], "/", parts[1])
-    end
-    return string("s/", unit)
+    occursin('/', unit) || return string("s/", unit)
+    parts = split(unit, '/'; limit = 2)
+    return string(parts[2], "/", parts[1])
 end
 
 """
     _format_rate(rate, unit) -> String
 
-Render an items-per-second rate using SI-ish magnitude prefixes, e.g. "1.2k it/s"
-or "3.4M it/s".  Rates below one item per second are shown inverted, as seconds per
-item ("1.5 s/it"), which is far easier to read for slow work.
+A rate with SI-ish magnitude prefixes ("1.2k it/s"). Below one item per second it is
+shown inverted as seconds per item ("1.5 s/it"), which is far easier to read for slow
+work.
 """
 function _format_rate(rate::Real, unit::AbstractString)
     (!isfinite(rate) || rate <= 0) && return ""
-    if rate >= 1_000_000_000
-        return string(round(rate / 1_000_000_000, digits = 1), "G ", unit)
-    elseif rate >= 1_000_000
-        return string(round(rate / 1_000_000, digits = 1), "M ", unit)
-    elseif rate >= 1_000
-        return string(round(rate / 1_000, digits = 1), "k ", unit)
-    elseif rate >= 1
-        return string(round(rate, digits = 1), " ", unit)
-    else
-        return string(round(1 / rate, digits = 1), " ", _inverse_unit(unit))
-    end
+    rate >= 1e9 && return string(round(rate / 1e9, digits = 1), "G ", unit)
+    rate >= 1e6 && return string(round(rate / 1e6, digits = 1), "M ", unit)
+    rate >= 1e3 && return string(round(rate / 1e3, digits = 1), "k ", unit)
+    rate >= 1   && return string(round(rate, digits = 1), " ", unit)
+    return string(round(1 / rate, digits = 1), " ", _inverse_unit(unit))
 end
 
 # ---------------------------------------------------------------------------
-# SpinnerColumn
+# Spinner
 # ---------------------------------------------------------------------------
 
 """
     _SPINNER_STYLES
 
-Named animation frame sets for SpinnerColumn.  The :dots and :line styles are the
-portable ones; the rest are provided because a progress bar is allowed to be fun.
+Named animation frame sets for Spinner. The :dots and :line styles are the portable
+ones; the rest exist because a progress bar is allowed to be fun.
 """
 const _SPINNER_STYLES = Dict{Symbol, Vector{String}}(
     :dots    => ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"],
@@ -87,57 +78,58 @@ const _SPINNER_STYLES = Dict{Symbol, Vector{String}}(
     :bounce2 => ["⠁", "⠂", "⠄", "⡀", "⢀", "⠠", "⠐", "⠈"],
 )
 
-"""
-    _spinner_frames(style::Symbol) -> Vector{String}
-
-The frame set for a named spinner style.  Unknown styles raise an error listing the
-available names rather than silently rendering nothing.
-"""
+"""The frame set for a named spinner style."""
 function _spinner_frames(style::Symbol)
     frames = get(_SPINNER_STYLES, style, nothing)
-    frames === nothing && error("Progbiotic: unknown spinner style :", style,
-                                "; available styles: ",
-                                join(sort!(collect(keys(_SPINNER_STYLES))), ", "))
-    return frames
+    frames === nothing || return frames
+    throw(ProgbioticError("unknown spinner style :", style, "; available: ",
+                          join(sort!(collect(keys(_SPINNER_STYLES))), ", ")))
 end
 
-"""
-    SpinnerColumn(style::Symbol = :dots) -> SpinnerColumn
-
-An animated glyph that shows the bar is alive.  It rotates on wall-clock time (not
-on progress), so it keeps moving for an indeterminate bar - an unbounded channel,
-say - where there is no percentage to advance.
-
-Styles: :dots, :line, :dots2, :arc, :circle, :clock, :moon, :bounce, :grow,
-:blocks, :arrow, :bounce2.
-"""
-struct SpinnerColumn <: AbstractColumn
-    style  :: Symbol
-    frames :: Vector{String}
-
-    SpinnerColumn(style::Symbol) = new(style, _spinner_frames(style))
-    SpinnerColumn(; style::Symbol = :dots) = new(style, _spinner_frames(style))
-end
-
-# Frames advance at a fixed rate; 12 Hz reads as motion without being distracting.
+# frames advance at a fixed rate; 12 Hz reads as motion without being distracting
 const _SPINNER_HZ = 12.0
 
-function render_column(col::SpinnerColumn, state::BarState)
+"""
+    Spinner(style::Symbol = :dots; palette = [], hz = 12.0) -> Spinner
+    Spinner(frames::AbstractVector; palette = [], hz = 12.0) -> Spinner
+
+An animated glyph showing the bar is alive. It rotates on wall-clock time rather
+than on progress, so it keeps moving for an indeterminate bar where there is no
+percentage to advance.
+
+Styles: :dots, :line, :dots2, :arc, :circle, :clock, :moon, :bounce, :grow, :blocks,
+:arrow, :bounce2. Pass `frames` to use a theme's own glyphs, as `theme_layout` does.
+"""
+struct Spinner{P<:Colorant} <: AbstractColumn
+    frames  :: Vector{String}
+    palette :: Vector{P}
+    hz      :: Float64
+end
+
+Spinner(style::Symbol = :dots; palette = RGB{N0f8}[], hz::Real = _SPINNER_HZ) =
+    Spinner(_spinner_frames(style), palette, hz)
+
+Spinner(frames::AbstractVector; palette = RGB{N0f8}[], hz::Real = _SPINNER_HZ) =
+    Spinner(String[string(f) for f in frames], palette, hz)
+
+function render_column(col::Spinner, state::BarState)
     frames = col.frames
-    index = mod(floor(Int, time() * _SPINNER_HZ), length(frames)) + 1
-    return frames[index]
+    index = mod(floor(Int, time() * col.hz), length(frames)) + 1
+    isempty(col.palette) && return frames[index]
+
+    # the glyph walks the palette, so an idle bar still reads as alive
+    colour = col.palette[mod(floor(Int, time() * 4), length(col.palette)) + 1]
+    return string(ansi_fg(colour), frames[index], _ANSI_RESET)
 end
 
 # ---------------------------------------------------------------------------
-# TextColumn
+# Tag
 # ---------------------------------------------------------------------------
 
 """
-    TextColumn(template::String = "{desc}") -> TextColumn
+    Tag(template::String = "{desc}") -> Tag
 
-A static or interpolated label.
-
-The template may contain any of these placeholders:
+A static or interpolated label. Placeholders:
 
     {desc}      the bar's description
     {n}         completed units
@@ -146,195 +138,252 @@ The template may contain any of these placeholders:
     {elapsed}   wall-clock seconds since the bar started, as HH:MM:SS
     {postfix}   the dynamic metrics, e.g. "loss=0.041, lr=1e-4"
 
-Unknown placeholders are left untouched, so templates that contain literal braces
-still work.
+Unknown placeholders are left alone, so a template with literal braces still works.
 """
-struct TextColumn <: AbstractColumn
+struct Tag <: AbstractColumn
     template :: String
-
-    TextColumn(template::AbstractString) = new(String(template))
-    TextColumn(; template::AbstractString = "{desc}") = new(String(template))
 end
 
-function render_column(col::TextColumn, state::BarState)
+Tag(; template::AbstractString = "{desc}") = Tag(String(template))
+
+function render_column(col::Tag, state::BarState)
     text = col.template
-    occursin("{desc}", text)    && (text = replace(text, "{desc}" => state.desc[]))
-    occursin("{n}", text)       && (text = replace(text, "{n}" => string(state.current[])))
-    occursin("{total}", text)   && (text = replace(text, "{total}" =>
-        state.total === nothing ? "" : string(state.total)))
-    occursin("{pct}", text)     && (text = replace(text, "{pct}" =>
-        state.total === nothing ? "" : string(round(100 * pbfraction(state), digits = 1))))
-    occursin("{elapsed}", text) && (text = replace(text, "{elapsed}" =>
-        _format_hms(pbruntime(state))))
+    occursin("{desc}", text)    && (text = replace(text, "{desc}"    => state.desc[]))
+    occursin("{n}", text)       && (text = replace(text, "{n}"       => string(pbdone(state))))
+    occursin("{total}", text)   && (text = replace(text, "{total}"   => _total_text(state)))
+    occursin("{pct}", text)     && (text = replace(text, "{pct}"     => _percent_text(state, 1)))
+    occursin("{elapsed}", text) && (text = replace(text, "{elapsed}" => _format_hms(pbruntime(state))))
     occursin("{postfix}", text) && (text = replace(text, "{postfix}" => postfix_text(state)))
     return strip(text)
 end
 
-# ---------------------------------------------------------------------------
-# BarColumn
-# ---------------------------------------------------------------------------
+_total_text(state::BarState) = pbtotal(state) === nothing ? "" : string(pbtotal(state))
 
-"""
-    BarColumn(fill = '█', empty = '░', width = 30) -> BarColumn
-
-The bar itself, as a run of width characters.
-
-For a determinate bar the filled portion tracks the fraction completed.  For an
-indeterminate one (no total) a block of fill characters bounces left and right
-inside the track, which is the conventional "we are working, but we do not know how
-much is left" cue.
-"""
-struct BarColumn <: AbstractColumn
-    fill  :: Char
-    empty :: Char
-    width :: Int
-
-    BarColumn(fill::Char, empty::Char, width::Int) = new(fill, empty, width)
-    BarColumn(; fill::Char = '█', empty::Char = '░', width::Int = 30) =
-        new(fill, empty, max(1, width))
-end
-
-# Marquee speed, in track positions per second.
-const _MARQUEE_HZ = 10.0
-
-function render_column(col::BarColumn, state::BarState)
-    width = col.width
-    fraction = pbfraction(state)
-
-    if fraction === nothing
-        block = max(1, width ÷ 4)
-        span = max(1, width - block)
-        # Triangle wave: sweep right, then left, so the block never jumps.
-        period = 2 * span
-        tick = mod(floor(Int, time() * _MARQUEE_HZ), period)
-        position = tick <= span ? tick : period - tick
-        return string(repeat(string(col.empty), position),
-                      repeat(string(col.fill), block),
-                      repeat(string(col.empty), max(0, span - position)))
-    end
-
-    filled = clamp(round(Int, fraction * width), 0, width)
-    return string(repeat(string(col.fill), filled),
-                  repeat(string(col.empty), width - filled))
-end
-
-# ---------------------------------------------------------------------------
-# PercentageColumn
-# ---------------------------------------------------------------------------
-
-"""
-    PercentageColumn(digits::Int = 1) -> PercentageColumn
-
-The completion percentage, e.g. "45.2%".  Renders nothing for an indeterminate bar,
-where a percentage would be a lie.
-"""
-struct PercentageColumn <: AbstractColumn
-    digits :: Int
-
-    PercentageColumn(digits::Int) = new(max(0, digits))
-    PercentageColumn(; digits::Int = 1) = new(max(0, digits))
-end
-
-function render_column(col::PercentageColumn, state::BarState)
+function _percent_text(state::BarState, digits::Int)
     fraction = pbfraction(state)
     fraction === nothing && return ""
     value = 100 * fraction
-    text = col.digits == 0 ? string(round(Int, value)) : string(round(value, digits = col.digits))
+    return digits == 0 ? string(round(Int, value)) : string(round(value, digits = digits))
+end
+
+# ---------------------------------------------------------------------------
+# Bar
+# ---------------------------------------------------------------------------
+
+# marquee speed, in track positions per second
+const _MARQUEE_HZ = 10.0
+
+"""
+    Bar(; fill = '█', empty = '░', width = 30) -> Bar
+    Bar(units, empty, palette[, caps, head]; width = 30) -> Bar
+
+The bar itself, as a run of `width` characters framed by `caps` and tipped with
+`head`.
+
+The single-glyph form is the plain bar. The `units` form is the themed one: a stipple
+series from low to high fill, giving sub-character resolution, with the filled run
+coloured by interpolating `palette` from its left end to its right.
+
+For a determinate bar the filled run tracks the completed fraction. For an
+indeterminate one a block of glyphs bounces left and right inside the track, which is
+the conventional "working, but the amount left is unknown" cue.
+"""
+struct Bar{P<:Colorant} <: AbstractColumn
+    units   :: Vector{Char}
+    empty   :: Char
+    palette :: Vector{P}
+    caps    :: Tuple{Char, Char}
+    head    :: Union{Char, Nothing}
+    width   :: Int
+end
+
+Bar(; fill::Char = '█', empty::Char = '░', width::Int = 30) =
+    Bar([fill], empty, RGB{N0f8}[], (' ', ' '), nothing, max(1, width))
+
+Bar(fill::Char, empty::Char, width::Int) = Bar(; fill = fill, empty = empty, width = width)
+
+function Bar(units::AbstractVector, empty::Char, palette::AbstractVector{P},
+             caps::Tuple{Char, Char} = (' ', ' '), head::Union{Char, Nothing} = nothing;
+             width::Int = 30) where {P<:Colorant}
+    isempty(units) && throw(ProgbioticError("a Bar needs at least one fill glyph"))
+    return Bar(Char[units...], empty, Vector{P}(palette), caps, head, max(1, width))
+end
+
+render_column(col::Bar, state::BarState) = _bar_frame(col, pbfraction(state))
+
+_fg(col::Bar, t::Real) = palette_gradient(col.palette, float(t))
+_track(col::Bar) = isempty(col.palette) ? "" : ansi_fg(col.palette[begin])
+
+function _bar_frame(col::Bar, fraction::Union{Float64, Nothing})
+    fraction === nothing && return _marquee(col)
+
+    units = col.units
+    width = col.width
+    level = length(units)
+
+    # sub-character resolution: how far into the track, in units of the finest glyph
+    subunits = round(Int, clamp(fraction, 0.0, 1.0) * width * level)
+    full  = div(subunits, level)
+    rem_s = rem(subunits, level)
+    solid = string(units[end])
+
+    filled = if col.head === nothing || fraction >= 1.0 || (full == 0 && rem_s == 0)
+        string(repeat(solid, full), rem_s > 0 ? string(units[rem_s]) : "")
+    elseif rem_s > 0
+        # a head glyph replaces the tip of an in-progress bar
+        string(repeat(solid, full), col.head)
+    else
+        string(repeat(solid, max(0, full - 1)), col.head)
+    end
+
+    trailing = max(0, width - full - (rem_s > 0 ? 1 : 0))
+    return _frame(col, filled, repeat(string(col.empty), trailing), _fg(col, fraction))
+end
+
+# no total: sweep a block back and forth so the bar still moves
+function _marquee(col::Bar)
+    width = col.width
+    block = max(1, width ÷ 4)
+    span = max(1, width - block)
+    period = 2 * span
+    tick = mod(floor(Int, time() * _MARQUEE_HZ), period)
+    position = tick <= span ? tick : period - tick     # triangle wave: no jump at the ends
+    return _frame(col,
+                  repeat(string(col.units[end]), block),
+                  repeat(string(col.empty), max(0, span - position)),
+                  _fg(col, 0.0);
+                  leading = repeat(string(col.empty), position))
+end
+
+function _frame(col::Bar, filled::AbstractString, trailing::AbstractString,
+                colour::AbstractString; leading::AbstractString = "")
+    left, right = col.caps
+    track = _track(col)
+    # with no colour anywhere there is nothing to reset, and the bar must then be
+    # plain text: a stream that is not a terminal gets no escape sequences at all
+    reset = isempty(track) && isempty(colour) ? "" : _ANSI_RESET
+    return string(track, left, colour, leading, filled, track, trailing, right, reset)
+end
+
+# ---------------------------------------------------------------------------
+# Percentage and count
+# ---------------------------------------------------------------------------
+
+"""
+    Percent(digits::Int = 1) -> Percent
+
+The completion percentage, e.g. "45.2%". Renders nothing for an indeterminate bar,
+where a percentage would be a lie.
+"""
+struct Percent <: AbstractColumn
+    digits :: Int
+end
+
+Percent(; digits::Int = 1) = Percent(max(0, digits))
+
+function render_column(col::Percent, state::BarState)
+    text = _percent_text(state, col.digits)
+    isempty(text) && return ""
     return string(text, "%")
 end
 
+"""
+    Count() -> Count
+
+Completed and total units, e.g. "(42/100)". Renders nothing for an indeterminate bar,
+which has no total to compare against.
+"""
+struct Count <: AbstractColumn end
+
+function render_column(::Count, state::BarState)
+    total = pbtotal(state)
+    total === nothing && return ""
+    return string("(", pbdone(state), "/", total, ")")
+end
+
 # ---------------------------------------------------------------------------
-# RateColumn
+# Rate and ETA
 # ---------------------------------------------------------------------------
 
 """
-    RateColumn(unit::String = "it/s") -> RateColumn
+    Rate(unit::String = "it/s") -> Rate
 
-Throughput in items per second, measured over elapsed *work* time so it freezes
-while a bar waits on something else.  Below one item per second the column switches
-to seconds per item ("1.5 s/it"), which is what you actually want to see for slow
-work.
+Throughput, measured over elapsed *work* time so it freezes while a bar waits on
+something else. Below one item per second it switches to seconds per item, which is
+what you actually want to see for slow work.
 """
-struct RateColumn <: AbstractColumn
+struct Rate <: AbstractColumn
     unit :: String
-
-    RateColumn(unit::AbstractString) = new(String(unit))
-    RateColumn(; unit::AbstractString = "it/s") = new(String(unit))
 end
 
-function render_column(col::RateColumn, state::BarState)
-    return _format_rate(pbrate(state), col.unit)
-end
+Rate(; unit::AbstractString = "it/s") = Rate(String(unit))
 
-# ---------------------------------------------------------------------------
-# ETAColumn
-# ---------------------------------------------------------------------------
+render_column(col::Rate, state::BarState) = _format_rate(pbrate(state), col.unit)
 
 """
-    ETAColumn() -> ETAColumn
+    Eta() -> Eta
 
 Estimated time remaining as HH:MM:SS, extrapolated from the average rate so far.
-Renders nothing until enough progress has been made to extrapolate, and "00:00:00"
-once the bar is complete.
+Renders nothing until enough progress has been made to extrapolate.
 """
-struct ETAColumn <: AbstractColumn end
+struct Eta <: AbstractColumn end
 
-function render_column(::ETAColumn, state::BarState)
+function render_column(::Eta, state::BarState)
     eta = pbeta(state)
     eta === nothing && return ""
     return string("ETA ", _format_hms(eta))
 end
 
 # ---------------------------------------------------------------------------
-# PostfixColumn
+# Postfix
 # ---------------------------------------------------------------------------
 
 """
-    PostfixColumn(separator::String = ", ") -> PostfixColumn
+    Postfix(separator::String = ", ") -> Postfix
 
-The dynamic metrics attached to the bar by set_postfix!, rendered inline on the
-right-hand side of the line, e.g. "loss=0.041, accuracy=50.5%".
-
-Unlike a log line these are *state*, not history: they are overwritten each time
-set_postfix! is called, so they never clutter the scrollback.
+The dynamic metrics attached by `set_postfix!`, e.g. "loss=0.041, accuracy=50.5%".
+Unlike a log line these are *state*, not history: they are overwritten on every call,
+so they never clutter the scrollback.
 """
-struct PostfixColumn <: AbstractColumn
+struct Postfix <: AbstractColumn
     separator :: String
-
-    PostfixColumn(separator::AbstractString) = new(String(separator))
-    PostfixColumn(; separator::AbstractString = ", ") = new(String(separator))
 end
 
-function render_column(col::PostfixColumn, state::BarState)
+Postfix(; separator::AbstractString = ", ") = Postfix(String(separator))
+
+function render_column(col::Postfix, state::BarState)
     text = postfix_text(state; separator = col.separator)
     isempty(text) && return ""
     return string("[", text, "]")
 end
 
 # ---------------------------------------------------------------------------
-# Default layout
+# Theme layouts
 # ---------------------------------------------------------------------------
 
 """
-    default_layout() -> Vector{AbstractColumn}
+    theme_layout(t::Theme) -> Tuple
 
-The layout used when none is given:
+The column layout a theme describes.
 
-    [SpinnerColumn(:dots), TextColumn("{desc}"), BarColumn(),
-     PercentageColumn(), RateColumn("it/s"), ETAColumn(), PostfixColumn()]
-
-which renders roughly
-
-    ⠹ Parsing Records ████████████░░░░░░░░░░░░░░░░░░  42.0% 12.3 it/s ETA 00:00:07 [loss=0.041]
+A theme is applied by *building* columns, not by columns consulting it: styling is
+fixed when the bar is constructed, `render_column` stays a pure function of the state,
+and a custom column needs no plumbing to be styled.
 """
-function default_layout()
-    return AbstractColumn[
-        SpinnerColumn(:dots),
-        TextColumn("{desc}"),
-        BarColumn(),
-        PercentageColumn(),
-        RateColumn("it/s"),
-        ETAColumn(),
-        PostfixColumn(),
-    ]
-end
+theme_layout(t::Theme) = (
+    Spinner(t.spinner; palette = t.palette),
+    Tag("{desc}"),
+    Bar(t.barunits, t.empty, t.palette, t.caps, t.head),
+    Percent(),
+    Count(),
+    Rate("it/s"),
+    Eta(),
+    Postfix(),
+)
+
+"""
+    default_layout() -> Tuple
+
+The layout used when no theme is given: that of AMBER.
+"""
+default_layout() = theme_layout(AMBER)

@@ -30,8 +30,8 @@ string. Columns are composed into a Vector{AbstractColumn} (a *layout*) and
 joined with single spaces by the renderer, so a layout reads left-to-right like the
 bar it draws:
 
-    layout = [SpinnerColumn(:dots), TextColumn("{desc}"), BarColumn(),
-              PercentageColumn(), RateColumn("it/s"), ETAColumn(), PostfixColumn()]
+    layout = (Spinner(:dots), Tag("{desc}"), Bar(),
+              Percent(), Count(), Rate("it/s"), Eta(), Postfix())
 
 Implementations must define
 
@@ -107,7 +107,7 @@ layout, the output stream, the intercepted-log buffer and the background render
 task.
 
 # Keyword arguments
-- desc:      the bar's description (see TextColumn's "{desc}" template).
+- desc:      the bar's description (see Tag's "{desc}" template).
 - layout:    a Vector{AbstractColumn}; defaults to default_layout().
 - io:        output stream (defaults to stdout).
 - vanish:    seconds a finished bar (and the log lines under it) stays on screen
@@ -222,7 +222,7 @@ function ProgressContext(total::Union{Int, Nothing} = nothing;
                          tty::Union{Bool, Nothing} = nothing,
                          log_file = nothing)
     state = BarState(total; desc = desc)
-    columns = layout === nothing ? default_layout() : Vector{AbstractColumn}(layout)
+    columns = AbstractColumn[c for c in (layout === nothing ? default_layout() : layout)]
     interactive = tty === nothing ? _is_tty(io) : Bool(tty)
     fps > 0 || throw(ProgbioticError("fps must be positive; got ", fps))
     sink, destination = _open_log_sink(log_file)

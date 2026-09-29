@@ -62,7 +62,7 @@ sink() = IOBuffer()
         @test indeterminate.ctx.state.total === nothing
         finish!(indeterminate)
 
-        custom = prog(1:3; layout = [TextColumn("{n}/{total}")], io = sink(), vanish = 0.0)
+        custom = prog(1:3; layout = [Tag("{n}/{total}")], io = sink(), vanish = 0.0)
         @test length(custom.ctx.layout) == 1
         finish!(custom)
     end

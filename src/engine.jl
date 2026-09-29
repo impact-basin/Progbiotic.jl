@@ -20,7 +20,6 @@
 # ---------------------------------------------------------------------------
 
 const _CSI = "\e["
-const _ANSI_RESET = "\e[0m"
 
 """Move the cursor up n rows (no-op for n <= 0)."""
 _cursor_up(n::Int) = n > 0 ? string(_CSI, n, "A") : ""
@@ -140,8 +139,8 @@ function render_flat_line(ctx::ProgressContext)
     for column in ctx.layout
         # The description and the percentage are already in the head, and a spinner
         # or a bar would only add noise.
-        (column isa TextColumn || column isa SpinnerColumn ||
-         column isa BarColumn || column isa PercentageColumn) && continue
+        (column isa Tag || column isa Spinner ||
+         column isa Bar || column isa Percent) && continue
         text = render_column(column, state)
         isempty(text) || push!(extras, text)
     end

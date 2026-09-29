@@ -34,9 +34,9 @@ export render_column
 export ProgressContext
 
 include("columns.jl")
-export SpinnerColumn, TextColumn, BarColumn, PercentageColumn
-export RateColumn, ETAColumn, PostfixColumn
-export default_layout
+export Spinner, Tag, Bar, Percent
+export Count, Rate, Eta, Postfix
+export theme_layout, default_layout
 
 include("engine.jl")
 export render_frame, render_block, render_flat_line

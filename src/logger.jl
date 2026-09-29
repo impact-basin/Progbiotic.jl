@@ -710,7 +710,7 @@ with_progress_logging(f::Function, bar; capture = true) =
     set_postfix!(bar; kwargs...)
 
 Attach dynamic key/value metrics to the active progress bar.  They are rendered
-inline on the right-hand side of the bar (see PostfixColumn) and overwritten on
+inline on the right-hand side of the bar (see Postfix) and overwritten on
 every call, so they are state rather than history:
 
     for epoch in 1:100
