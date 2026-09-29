@@ -420,6 +420,16 @@ function _render_loop(root::Progress)
         end
     finally
         try
+            # A flat log is append-only and this is its last chance to write the final
+            # state. Two ways out miss it otherwise: the tree coming to rest during a draw,
+            # which breaks the loop before the forced pass at the top can run again, and a
+            # scope ending while the loop is asleep -- with dt at 50ms and a shorter scope,
+            # the task never wakes up again and the nodes registered after its last tick
+            # would never be written at all.
+            root.opts.tty || drew_final || render_tick!(root; force = true)
+        catch
+        end
+        try
             _release_gutter!(root)
         catch
         end

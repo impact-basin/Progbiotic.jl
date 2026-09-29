@@ -335,6 +335,26 @@ end
         @test occursin("job 1", text) && occursin("job 2", text) && occursin("job 3", text)
     end
 
+    @testset "every milestone reaches the flat log" begin
+        # the render loop used to break out when the tree came to rest during a draw,
+        # which skipped the forced final pass, so a milestone registered just before the
+        # scope ended could lose its line entirely. It cannot be forced from a test, so
+        # this runs the shape a handful of times instead.
+        for _ in 1:5
+            buf = IOBuffer()
+            @progress "scan" d = 1 io = buf begin
+                @progress "step 1"
+                sleep(0.01)
+                @progress "step 2"
+                sleep(0.01)
+                @progress "step 3"
+                sleep(0.01)
+            end
+            logged = String(take!(buf))
+            @test all(step -> occursin("step " * string(step), logged), 1:3)
+        end
+    end
+
     @testset "a container's total grows with the milestones it sees" begin
         # the total cannot be counted from the source: a milestone inside an if is one
         # statement, and one inside a loop is one statement but several registrations
