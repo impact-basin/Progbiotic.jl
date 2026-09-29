@@ -28,7 +28,7 @@ bar and a bare `set_postfix!` resolves to it.
 """
 function Progress(f::Function, total::Union{Int, Nothing} = nothing; kwargs...)
     bar = Progress(total; kwargs...)
-    _with_progress_logging(bar) do
+    _with_scope(bar) do
         try
             f(bar)
         finally

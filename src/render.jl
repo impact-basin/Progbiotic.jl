@@ -2,12 +2,8 @@
 #
 # one line per node comes from its column layout. The tree is a depth-first walk that
 # measures the widest visible label first, so every row's bar, rate and time line up,
-# then draws each line behind its branch prefix with that node's live log lines under
-# it. Where the block goes and when it is redrawn is src/engine.jl's business; nothing
-# here touches the terminal.
-
-"""The most log lines drawn under a single bar."""
-const MAX_RENDERED_LOGS = 8
+# then draws each line behind its branch prefix. Where the block goes and when it is
+# redrawn is src/engine.jl's business; nothing here touches the terminal.
 
 """The narrowest description column, so a short label does not crowd the bar."""
 const _MIN_DESC_WIDTH = 14
@@ -75,19 +71,6 @@ standalone form, with no tree around it and no terminal to fit into.
 render_frame(node::Progress) = render_line(node)
 
 """
-    render_block(node, now_sec = time()) -> Vector{String}
-
-A node's complete frame: its own line followed by one line per live log record.
-"""
-function render_block(node::Progress, now_sec::Float64 = time())
-    lines = String[render_frame(node)]
-    for entry in active_logs(node, now_sec)
-        push!(lines, format_log_line(entry))
-    end
-    return lines
-end
-
-"""
     _rest_width(node, desc_width) -> Int
 
 The visible width of everything in a node's line except the bar, its separators
@@ -112,15 +95,14 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    Row(node, prefix, gutter, depth)
+    Row(node, prefix, depth)
 
-One drawn line: the node it belongs to, the branch prefix the line sits behind, the
-prefix that node's log lines sit behind, and the node's depth in the tree.
+One drawn line: the node it belongs to, the branch prefix the line sits behind, and the
+node's depth in the tree.
 """
 struct Row{P<:Progress}
     node   :: P
     prefix :: String
-    gutter :: String
     depth  :: Int
 end
 
@@ -137,11 +119,11 @@ filling the screen with stale bars.
 function _tree_rows(root::Progress, symbols, collapse::Bool, now_sec::Float64)
     titled = !isempty(root.root.title)
     rows   = Row[]
-    # the root is filtered like anything else. It stays while it has children or live log
-    # lines of its own, so the only time it drops out is when the whole tree has been
-    # erased -- which is what lets a standalone bar vanish.
+    # the root is filtered like anything else. It stays while it has children, so the only
+    # time it drops out is when the whole tree has been erased -- which is what lets a
+    # standalone bar vanish.
     _visible(root, now_sec) &&
-        push!(rows, Row(root, titled ? symbols[:term] : "", titled ? symbols[:nada] : "", 0))
+        push!(rows, Row(root, titled ? symbols[:term] : "", 0))
     _collect_rows!(rows, root, "", symbols, collapse, now_sec)
     return rows
 end
@@ -155,27 +137,10 @@ function _collect_rows!(rows::Vector, node::Progress, prefix::AbstractString, sy
         last      = i == length(kids)
         branch    = last ? symbols[:term] : symbols[:leaf]
         extension = last ? symbols[:nada] : symbols[:line]
-        push!(rows, Row(kid, string(prefix, branch), string(prefix, extension),
-                        node_depth(kid)))
+        push!(rows, Row(kid, string(prefix, branch), node_depth(kid)))
         _collect_rows!(rows, kid, string(prefix, extension), symbols, collapse, now_sec)
     end
     return rows
-end
-
-"""
-    _all_nodes!(out, node)
-
-Every node of a tree, depth-first, whether or not it is still on screen.
-
-The append-only renderer needs this: a record captured by a bar that has since vanished
-still belongs in the log, and the visible rows are only the ones still being drawn.
-"""
-function _all_nodes!(out::Vector, node::Progress)
-    push!(out, node)
-    for kid in children(node)
-        _all_nodes!(out, kid)
-    end
-    return out
 end
 
 # whether a node's subtree is drawn: a finished node keeps final_depth levels below the
@@ -188,15 +153,12 @@ children_visible(node::Progress, collapse::Bool, now_sec::Float64) =
 
 Whether a node is drawn at all.
 
-A node stays while any of its children does, and while it holds live log lines, so an
-intercepted record is never cut short by the bar that owns it vanishing first. Nodes
-within `final_depth` are kept regardless of their timeout, a node with an infinite
-timeout stays forever, and anything else goes once its timeout has run out from the
-tick that first saw it finished.
+A node stays while any of its children does. Nodes within `final_depth` are kept
+regardless of their timeout, a node with an infinite timeout stays forever, and anything
+else goes once its timeout has run out from the tick that first saw it finished.
 """
 function _visible(node::Progress, now_sec::Float64)
     any(child -> _visible(child, now_sec), children(node)) && return true
-    has_active_logs(node, now_sec) && return true
     # final_depth promises to keep N levels of children below the top of the tree. The
     # root is not one of them: it vanishes on its own timeout, like any other bar.
     node.parent !== nothing && node_depth(node) <= node.root.final_depth && return true
@@ -261,34 +223,10 @@ function render_tree(node::Progress; collapse::Bool = true, width::Int = 0,
         line = string(flush_root ? "" : row.prefix,
                       render_line(row.node, desc_width, bar_width))
         println(io, _clip(line, width))
-        _render_logs(io, row.node, flush_root ? "" : row.gutter, symbols, now_sec, width)
     end
     # the rows are newline-joined, not newline-terminated: the gutter splits this on
     # newlines to count the height of the block it is about to claim
     return chomp(String(take!(io)))
-end
-
-"""
-    _render_logs(io, node, prefix, symbols, now_sec, width = 0) -> Int
-
-Draw the live log lines buffered for a node directly beneath its bar, indented by
-`prefix` (the node's tree gutter), and return how many were written. Expired entries
-are pruned on the way, so a renderer measuring the block's height only ever counts the
-lines that are really drawn.
-"""
-function _render_logs(io::IO, node::Progress, prefix::AbstractString, symbols,
-                      now_sec::Float64, width::Int = 0)
-    entries = active_logs(node, now_sec)
-    isempty(entries) && return 0
-    if length(entries) > MAX_RENDERED_LOGS
-        entries = entries[(end - MAX_RENDERED_LOGS + 1):end]
-    end
-
-    gutter = get(symbols, :line, "│  ")
-    for entry in entries
-        println(io, _clip(string(prefix, gutter, format_log_line(entry)), width))
-    end
-    return length(entries)
 end
 
 # ---------------------------------------------------------------------------

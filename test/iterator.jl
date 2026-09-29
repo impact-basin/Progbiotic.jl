@@ -72,17 +72,12 @@ using Test
         @test Progbiotic.isfinished(it.bar.state)
     end
 
-    @testset "do-block form captures logs and finishes the bar" begin
-        buffer = sink()
+    @testset "the do-block form runs the whole loop" begin
         collected = Int[]
-        prog(1:6; desc = "block", io = buffer, vanish = 0.0) do x
+        prog(1:6; desc = "block", io = sink(), vanish = 0.0) do x
             push!(collected, x)
-            x == 4 && @info "midpoint " * string(x)
         end
         @test collected == collect(1:6)
-        output = String(take!(buffer))
-        @test occursin("[INFO] midpoint 4", output)
-        @test occursin("[INFO] block 100% (6/6)", output)
     end
 
     @testset "wrapped collections behave like the collection" begin
@@ -110,18 +105,15 @@ using Test
         finish!(wrapped)
     end
 
-    @testset "a wrapped collection's bar is the capture target" begin
-        buffer = sink()
-        # a record inherits the bar's vanish timeout, so an entry only survives to be
-        # read back if the bar itself lingers
-        it = prog(1:4; desc = "scoped", io = buffer, vanish = 30.0)
-        Progbiotic._with_progress_logging(it.bar) do
+    @testset "a wrapped collection's bar is what a bare set_postfix! finds" begin
+        it = prog(1:4; desc = "scoped", io = sink(), vanish = 0.0)
+        Progbiotic._with_scope(it.bar) do
             for _ in it
-                @info "inside"
+                set_postfix!(pass = "one")
             end
         end
         @test pbdone(it) == 4
-        @test any(entry -> entry.message == "inside", active_logs(it.bar))
+        @test occursin("pass=one", Progbiotic.postfix_text(it.bar.state))
         finish!(it)
     end
 

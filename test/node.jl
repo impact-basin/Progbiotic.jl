@@ -39,8 +39,6 @@ using Test
     end
 
     @testset "supporting types start empty" begin
-        @test isempty(Progbiotic.LogBuf().entries)
-
         p = Progbiotic.Paint()
         @test (p.count, p.flat_pct, p.last_flat, p.flat_done, p.completed_at) ==
               (0, -1, 0.0, false, 0.0)
@@ -53,8 +51,6 @@ using Test
         @test r.final_depth == 0
         @test r.style == :round
         @test r.child_vanish == 1.0
-        @test r.sink === nothing
-        @test r.dest === nothing
     end
 
     @testset "a node starts empty and knows its tree" begin

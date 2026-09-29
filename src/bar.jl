@@ -217,46 +217,6 @@ Opts(; vanish::Real = 1.0, dt::Real = 0.05, flat_step::Integer = 10,
     Opts(float(vanish), float(dt), max(1, Int(flat_step)), max(0, Int(width)), tty, threaded)
 
 """
-    LogEntry(level, message, created_at)
-
-One intercepted log record.
-
-`printed` is set once the append-only renderer has streamed the entry out, so a CI
-log shows each record exactly once while `active_logs` keeps reporting everything the
-scope captured. Entries are pruned once they are older than the scope's vanish
-timeout.
-"""
-mutable struct LogEntry
-    level      :: Logging.LogLevel
-    message    :: String
-    created_at :: Float64
-    vanish     :: Float64
-    printed    :: Bool
-end
-
-LogEntry(level, message, created_at, vanish) = LogEntry(level, message, created_at, vanish, false)
-
-Base.show(io::IO, e::LogEntry) = print(io, "LogEntry(", e.level, ", ", repr(e.message), ")")
-
-"""True once the entry is older than its own vanish timeout."""
-_expired(e::LogEntry, now_sec::Float64) = (now_sec - e.created_at) > e.vanish
-
-
-"""
-    LogBuf()
-
-One node's intercepted records and the lock guarding them. The permanent sink is the
-tree's, not the node's: a `log_file` belongs to the whole scope, so it lives on the
-`RootState` every node of the tree shares.
-"""
-mutable struct LogBuf
-    entries :: Vector{LogEntry}
-    lock    :: ReentrantLock
-end
-
-LogBuf() = LogBuf(LogEntry[], ReentrantLock())
-
-"""
     Paint()
 
 Renderer bookkeeping for one node: the counter value seen at the previous tick, the last
@@ -282,12 +242,10 @@ end
 Paint() = Paint(0, -1, 0.0, false, 0.0)
 
 """
-    RootState(; title = "", final_depth = 0, child_vanish = 1.0, sink = nothing,
-              dest = nothing)
+    RootState(; title = "", final_depth = 0, child_vanish = 1.0)
 
 State shared by every node of one tree: the render task, the rows drawn last frame,
-the header title and collapse depth, the whole tree's log sink, and the locks guarding
-the shared stream and the tree's shape.
+the header title and collapse depth, and the lock guarding the shared stream.
 
 A child holds the same object as its root, which is what makes "children never spawn
 a task" a property of the types rather than a convention someone has to remember.
@@ -304,22 +262,18 @@ mutable struct RootState
     final_depth  :: Int
     style        :: Symbol
     child_vanish :: Float64
-    sink         :: Union{IO, Nothing}
-    dest         :: Union{String, IO, Nothing}
     last_draw    :: Float64
     lock         :: ReentrantLock
-    sink_lock    :: ReentrantLock
 end
 
 function RootState(; title::AbstractString = "", final_depth::Integer = 0,
-                   style::Symbol = :round, child_vanish::Real = 1.0,
-                   sink::Union{IO, Nothing} = nothing, dest = nothing)
+                   style::Symbol = :round, child_vanish::Real = 1.0)
     style in keys(TREE_STRS) ||
         throw(ProgbioticError("unknown tree style :", style, "; available: ",
                               join(sort!(collect(keys(TREE_STRS))), ", ")))
     return RootState(nothing, Threads.Atomic{Bool}(false), 0, String(title),
-                     max(0, Int(final_depth)), style, float(child_vanish), sink, dest,
-                     0.0, ReentrantLock(), ReentrantLock())
+                     max(0, Int(final_depth)), style, float(child_vanish), 0.0,
+                     ReentrantLock())
 end
 
 """
@@ -349,7 +303,7 @@ end
     Progress(total = nothing; desc = "", theme = AMBER, layout = nothing,
              kind = :bar, vanish = 1.0, child_vanish = nothing, width = 0,
              io = stdout, fps = 20.0, flat_step = 10, tty = nothing,
-             log_file = nothing, threaded = Threads.nthreads() > 1,
+             threaded = Threads.nthreads() > 1,
              title = "", final_depth = 0, start = true) -> Progress
 
 One node of a progress tree: its state, the layout its line is built from, and its
@@ -361,9 +315,9 @@ around a root, `Progress` hands you the root itself, and `@progress` builds a tr
 of them.
 
 The node is immutable. Every mutable thing it touches is a cell behind a reference:
-the `BarState`, this node's `LogBuf` and `Paint`, and the `RootState` shared by
-every node of the tree -- which is what makes "a child never spawns a render task" a
-property of the types rather than a convention.
+the `BarState`, this node's `Paint`, and the `RootState` shared by every node of
+the tree -- which is what makes "a child never spawns a render task" a property of the
+types rather than a convention.
 
 `parent` and `children` are the two deliberate points of type erasure. A tree is
 heterogeneous, because a layout is per node and a tuple of columns is its own type, so
@@ -387,7 +341,7 @@ a child vector cannot name its element type. Read the children through
 - final_depth:  how many levels of children a finished node keeps on screen.
 - start:        begin rendering immediately. A root nobody renders never draws.
 
-`io`, `fps`, `flat_step`, `tty`, `log_file` and `threaded` are `Opts`'.
+`io`, `fps`, `flat_step`, `tty` and `threaded` are `Opts`'.
 """
 struct Progress{L, T<:Theme}
     state    :: BarState
@@ -398,7 +352,6 @@ struct Progress{L, T<:Theme}
     io       :: IO
     parent   :: Union{Progress, Nothing}
     children :: Vector{Progress}
-    logs     :: LogBuf
     root     :: RootState
     paint    :: Paint
 end
@@ -419,7 +372,6 @@ function Progress(total::Union{Int, Nothing} = nothing;
                   flat_step::Integer = 10,
                   io::IO = stdout,
                   tty::Union{Bool, Nothing} = nothing,
-                  log_file = nothing,
                   threaded::Bool = Threads.nthreads() > 1,
                   title::AbstractString = "",
                   final_depth::Integer = 0,
@@ -430,10 +382,8 @@ function Progress(total::Union{Int, Nothing} = nothing;
     own = _resolve_vanish(vanish_timeout === nothing ? vanish : vanish_timeout)
     opts = Opts(; vanish = own, dt = 1.0 / fps, flat_step = flat_step, width = width,
                 tty = tty === nothing ? _is_tty(io) : Bool(tty), threaded = threaded)
-    sink, dest = _open_log_sink(log_file)
     root = RootState(; title = title, final_depth = final_depth, style = style,
-                     child_vanish = child_vanish === nothing ? own : child_vanish,
-                     sink = sink, dest = dest)
+                     child_vanish = child_vanish === nothing ? own : child_vanish)
     node = _node(total, desc, theme, layout, opts, kind, io, nothing, root)
 
     start && start_render!(node)
@@ -448,8 +398,8 @@ end
 
 Hang a node under `parent` and return it.
 
-The child shares the tree: its stream, frame rate, flat step, tty mode, render task and
-log sink all come from the root. It takes `parent.theme` unless given one, and
+The child shares the tree: its stream, frame rate, flat step, tty mode and render task
+all come from the root. It takes `parent.theme` unless given one, and
 `parent.root.child_vanish` seconds of vanish unless given its own. The glyph keywords
 restyle a copy of the theme, exactly as the `Theme` copy constructor does.
 
@@ -498,7 +448,7 @@ function _node(total, desc, theme::Theme, layout, opts::Opts, kind::Symbol, io::
     columns = layout === nothing ? nothing : Tuple(layout)
     return Progress{typeof(columns), typeof(theme)}(
         BarState(total; desc = desc), theme, columns, opts, kind, io, parent,
-        Progress[], LogBuf(), root, Paint())
+        Progress[], root, Paint())
 end
 
 """

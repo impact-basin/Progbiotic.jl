@@ -2,7 +2,6 @@ module Progbiotic
 
 using ColorTypes: Colorant, RGB, N0f8, red, green, blue
 using MacroTools: @capture
-import Logging   # stdlib: log interception for @progress scopes
 
 include("errors.jl")
 export ProgbioticError
@@ -41,17 +40,14 @@ export theme_layout, default_layout
 
 # --- drawing and the terminal ------------------------------------------------
 include("render.jl")
-export render_line, render_frame, render_block
+export render_line, render_frame
 export render_tree, render_flat_line
 
 include("engine.jl")
 
 include("logger.jl")
-export ProgbioticLogger
 export current_bar
-export LogEntry
 export set_postfix!
-export push_log!, prune_logs!, active_logs
 
 # --- the front-ends ----------------------------------------------------------
 include("imperative.jl")

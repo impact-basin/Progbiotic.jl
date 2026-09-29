@@ -641,9 +641,9 @@ end
     end
 
     @testset "a body is not wrapped in a closure" begin
-        # the capture scope is installed with Base.ScopedValues.@with rather than
-        # Logging.with_logger, which is what makes all three of these behave as they would
-        # without the macro. A return used to leave the scope instead of the function.
+        # the body runs inline in the caller's function: the current bar is installed by a
+        # pair of calls rather than by a do-block, which is what makes all of these behave
+        # as they would without the macro. A return used to leave the scope instead.
         function returning()
             seen = Int[]
             @progress "x" total = 10 io = IOBuffer() for i in 1:10

@@ -82,12 +82,12 @@ end
 ```
 
 Pass `total=n` to override the inference, or `total=nothing` to force spinner mode
-on a collection that does have a length. There is also a do-block form, which runs
-the whole loop inside a log-capturing scope:
+on a collection that does have a length. There is also a do-block form, which finishes
+the bar when the block returns:
 
 ```julia
 prog(1:100; desc = "Training") do x
-    x == 50 && @info "halfway"
+    # ...
 end
 ```
 
@@ -135,7 +135,7 @@ overwritten on every call, so they are *state* rather than history and never clu
 the scrollback:
 
 ```julia
-@progress "Model Training" total=100 vanish=3.0 log_file="train.log" for epoch in 1:100
+@progress "Model Training" total=100 vanish=3.0 for epoch in 1:100
     loss = 1.0 / epoch
     acc = 0.5 + (epoch / 200)
 
@@ -146,7 +146,8 @@ end
 With no argument the metrics go to the innermost active bar: inside a `@progress`
 scope, the job of the innermost level; inside a `prog(...)` or `Progress(...)`
 scope, that bar. Pass a bar explicitly (`set_postfix!(p; ...)`) to target a
-particular one.
+particular one. A bare `set_postfix!()` outside any scope raises, since there
+would be no bar for the metrics to land on.
 
 ## Column layouts
 
@@ -204,79 +205,16 @@ It is a pure function of the bar's state: no I/O, no locks, no blocking. An
 unstyled column emits no escape sequences at all, so a bar is plain text unless a
 palette gives it colour.
 
-## Persistent log sinks
-
-Log lines drawn in the terminal are transient: they vanish once the scope's `vanish`
-timeout elapses or the bar is erased. Pass `log_file` and every intercepted record
-is *also* appended, permanently and in plain text, to that file or stream:
-
-```julia
-@progress "Ingesting records" total=100 vanish=2.0 log_file="ingest.log" for i in 1:100
-    i % 25 == 0 && @info "checkpoint at record $i"
-end
-```
-
-The screen shows the checkpoints for two seconds; `ingest.log` keeps them:
-
-```text
-[INFO] checkpoint at record 25
-[INFO] checkpoint at record 50
-[INFO] checkpoint at record 75
-[INFO] checkpoint at record 100
-```
-
-The same option is accepted by `prog` and `Progress`. `log_file` may be a path
-(opened in append mode and closed when the scope is torn down) or any `IO` you own.
-
-## Capturing logs outside the macro
-
-A `@progress` scope installs its own logger, so it intercepts `@info`, `@warn`
-and friends automatically. The do-block forms of `prog` and `Progress` are scopes
-too, so a loop you drive yourself has somewhere for its records to land:
-
-```julia
-Progress(100; desc = "Training") do p
-    for i in 1:100
-        next!(p)
-        i == 50 && @info "halfway"
-    end
-end
-```
-
-Capture is *scoped*. Progbiotic does not touch `Logging.global_logger`, so a bare
-loop over `prog(...)` leaves logging exactly as it found it:
-
-```julia
-for x in prog(1:100)      # records here go to the ordinary logger
-    x == 50 && @info "halfway"
-end
-```
-
-To capture in that shape, open a scope around the loop, or use the do-block form
-`prog(1:100) do x ... end`. A bare `set_postfix!()` outside any scope raises, since
-there would be no bar for the metrics to land on.
-
-### `ProgressLogging.jl`
-
-Progbiotic understands the ProgressLogging protocol in both of its released shapes:
-records whose message is a `ProgressLogging.Progress`, and records carrying a
-`progress` (or older `_progress`) keyword argument. Such a record updates the
-bar instead of producing a line, and `ProgressLogging.jl` is not a dependency.
-
-```julia
-@info "iterating" progress = 0.5     # drives the active bar to 50%
-```
-
 ## Terminal vs. CI
 
 The engine detects whether its output stream is an interactive terminal (and whether
-`CI` is set). On a terminal the bar tree lives in a gutter reserved at the bottom of
-the screen, behind a scroll region, so your own `println` output scrolls *above* it
-instead of being overwritten by the next frame. When the tree grows, the engine
-scrolls to make room rather than clearing, so the output already on screen is pushed
-up intact; when it shrinks or finishes, the rows go back. Anywhere else - a pipe, a
-redirected file, a CI build - it emits flat, append-only lines and *not a single
-escape sequence*:
+`CI` is set). On a terminal the bar tree lives in a gutter: the engine reserves the
+bottom rows of the screen outside the terminal's scroll region and parks the cursor
+inside that region, so a `println` from your own loop scrolls *above* the bar rather
+than clobbering it. When the tree grows, the engine scrolls to make room rather than
+clearing, so the output already on screen is pushed up intact; when it shrinks or
+finishes, the rows go back. Anywhere else - a pipe, a redirected file, a CI build -
+it emits flat, append-only lines and *not a single escape sequence*:
 
 ```text
 [INFO] Parsing Records 0% (0/1000) ETA: N/A
@@ -293,13 +231,12 @@ loop adds eleven lines to a build log rather than thousands. Force either mode w
 
 The computational loop never touches the terminal. Advancing a bar is a single
 lock-free `Threads.Atomic` add, and drawing happens on a separate task that wakes at
-most `fps` times a second (default 20). Log appends take one short lock; every
-terminal write happens under another, from a single renderer.
+most `fps` times a second (default 20). Every terminal write takes one short lock,
+from a single renderer.
 
 That means a `Threads.@threads` loop can advance one bar from every worker with no
-lock contention and no lost updates, and log from every worker without tearing the
-display - and a fine-grained loop over `10^7` items pays for a handful of atomic
-adds per item and nothing else.
+lock contention and no lost updates, and a fine-grained loop over `10^7` items pays
+for a handful of atomic adds per item and nothing else.
 
 By default the renderer is an async task, which runs exactly when the loop yields -
 that is, when terminal I/O is free - and costs nothing at all while a tight loop is
@@ -396,8 +333,7 @@ The `@progress` keyword options accept short aliases:
 
 `v` can be set to a number or a boolean. A number sets the vanish timeout in seconds and a boolean
 switches vanishing on/off. The full names work as well: `vanish_timeout=2.0` (or
-`vanish=2.0`) sets the timeout for both a bar and the log lines it holds, and
-`vanish=false` keeps them on screen.
+`vanish=2.0`) sets the timeout, and `vanish=false` keeps bars on screen.
 
 An example usage:
 
@@ -408,42 +344,6 @@ An example usage:
     end
 end
 ```
-
-## Log capture
-
-`@info`, `@debug`, `@warn` and `@error` calls made inside a `@progress` scope are
-intercepted and drawn underneath the bar of the innermost active job. Each log line
-is pruned with the `vanish` timeout of the scope it was emitted in and is
-colour-coded by level (cyan `@info`, yellow `@warn`, blue `@debug`, red `@error`).
-
-```julia
-# Log lines appear under the bar and disappear with it (here after 2.0s)
-@progress "Ingesting records" total=100 vanish=2.0 for i in 1:100
-    i % 25 == 0 && @info "checkpoint at record $i"
-    i == 87 && @warn "malformed record, applying fallback"
-end
-
-# Nested scopes keep independent log streams, each with its own timeout
-@progress "Batch run" total=5 vanish=10.0 for batch in 1:5
-    @info "starting batch $batch"                     # outer bar, 10.0s
-    @progress "Processing items" total=50 vanish=1.5 for item in 1:50
-        item == 13 && @debug "cache miss for item 13" # inner bar, 1.5s
-    end
-end
-
-# Capture only some levels: everything else reaches the normal logger unchanged
-@progress "Reindexing" total=1000 capture=[:warn, :error] for id in 1:1000
-    @info "processing $id"                # printed to the terminal as usual
-    id == 404 && @warn "entity missing"   # captured under the bar
-end
-```
-
-`capture=` (alias `capture_logs=`) accepts `true` (the default — every level),
-`false` (nothing is captured), a `LogLevel`, or a collection such as
-`[:warn, :error]`. The option is inherited by nested `@progress` levels unless
-overridden. Intercepted records are buffered on the bar they belong to, and the
-`push_log!`, `prune_logs!` and `active_logs` functions are exported for working
-with a bar directly.
 
 # Notes
 

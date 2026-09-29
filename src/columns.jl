@@ -424,8 +424,8 @@ _duration(state::BarState) = duration_str(pbruntime(state); show_ms = true)
     Postfix(separator::String = ", ") -> Postfix
 
 The dynamic metrics attached by `set_postfix!`, e.g. "loss=0.041, accuracy=50.5%".
-Unlike a log line these are *state*, not history: they are overwritten on every call,
-so they never clutter the scrollback.
+Unlike everything else a bar shows, these are *state* rather than history: they are
+overwritten on every call, so they never clutter the scrollback.
 """
 struct Postfix <: AbstractColumn
     separator :: String

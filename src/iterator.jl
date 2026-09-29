@@ -70,17 +70,17 @@ or total = nothing to force indeterminate mode.
 # keyword arguments
 
 - desc:       the bar's description.
-- vanish:     seconds the finished bar (and its log lines) stays on screen.
+- vanish:     seconds the finished bar stays on screen.
 - total:      override the inferred total (nothing forces indeterminate).
 - layout:     a tuple of columns to draw instead of the theme's.
 - io:         output stream (defaults to stdout).
 - fps:        render cap, in frames per second (default 20).
 - flat_step:  non-interactive mode emits a line every this many percent.
 - tty:        force interactive or flat output.
-- log_file:   permanently append intercepted log records to this path or IO.
 - threaded:   render from a separate thread (worth it only for long, never-yielding loops).
 
-The two-argument form runs the whole loop inside a log-capturing scope and returns nothing:
+The two-argument form runs the whole loop with the bar installed as the current one, so a
+bare set_postfix!() inside it attaches there, and returns nothing:
 
     prog(1:100; desc = "Training") do x
         @info "processing \$x"
@@ -95,7 +95,6 @@ function prog(iter;
               fps::Real = 20.0,
               flat_step::Integer = 10,
               tty = nothing,
-              log_file = nothing,
               threaded::Bool = Threads.nthreads() > 1)
     resolved = total === _AUTO_TOTAL ? infer_total(iter) : total
     resolved isa Integer && (resolved = Int(resolved))
@@ -103,8 +102,7 @@ function prog(iter;
         throw(ProgbioticError("total must be an Int or nothing; got ", repr(resolved)))
 
     bar = Progress(resolved; desc = desc, layout = layout, io = io, vanish = vanish,
-                   fps = fps, flat_step = flat_step, tty = tty, log_file = log_file,
-                   threaded = threaded)
+                   fps = fps, flat_step = flat_step, tty = tty, threaded = threaded)
     return ProgbioticIterator(iter, bar)
 end
 
@@ -120,7 +118,7 @@ loop ends. This is the form to use when the body logs:
 """
 function prog(f::Function, iter; kwargs...)
     wrapped = prog(iter; kwargs...)
-    _with_progress_logging(wrapped.bar) do
+    _with_scope(wrapped.bar) do
         for item in wrapped
             f(item)
         end

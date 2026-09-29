@@ -30,33 +30,22 @@ using Test
         @test items == 500
     end
 
-    # 2. dynamic postfix metrics and persistent log sinks
-    @testset "postfix metrics and log sinks" begin
-        log_file = joinpath(mktempdir(), "train.log")
-        bar      = Ref{Any}(nothing)
+    # 2. dynamic postfix metrics
+    @testset "postfix metrics" begin
+        bar = Ref{Any}(nothing)
 
-        @progress "Model Training" total=100 vanish=3.0 log_file=log_file io=IOBuffer() for epoch in 1:100
+        @progress "Model Training" total=100 vanish=3.0 io=IOBuffer() for epoch in 1:100
             bar[] = current_bar()
             loss  = 1.0 / epoch
             acc   = 0.5 + (epoch / 200)
 
             # update inline key-value indicators on the active progress line
             set_postfix!(loss = round(loss, digits = 4), accuracy = "$(round(acc * 100, digits = 1))%")
-
-            if epoch % 25 == 0
-                # a transient line under the bar, and a permanent one in train.log
-                @info "Checkpoint saved at epoch $epoch"
-            end
         end
 
         line = plain(render_frame(bar[]))
         @test occursin("loss=", line)             # the metrics are state on the bar's line
         @test occursin("accuracy=", line)
-
-        # the records outlive the transient lines that showed them
-        written = read(log_file, String)
-        @test occursin("[INFO] Checkpoint saved at epoch 25", written)
-        @test occursin("[INFO] Checkpoint saved at epoch 100", written)
     end
 
     # 3. modular column layouts
@@ -91,15 +80,10 @@ using Test
         p = Progress(10_000; desc = "Parallel Processing", vanish = 1.0,
                      io = IOBuffer(), tty = false, start = false)
 
-        Progbiotic._with_progress_logging(p) do
+        Progbiotic._with_scope(p) do
             Threads.@threads for i in 1:10_000
                 # one atomic add, with no lock contention and no lost update
                 next!(p)
-
-                if i == 5000
-                    # concurrent log interception: the record lands under the bar
-                    @warn "Halfway mark reached on thread $(Threads.threadid())"
-                end
             end
         end
         finish!(p)

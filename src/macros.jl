@@ -80,8 +80,7 @@ Maps short-form option names to their full names and normalises values:
 - `t=OCEAN` -> `theme=OCEAN`
 - `v=false` -> `vanish=false`      (keep bars on screen)
 - `v=1.2`   -> `vanish_timeout=1.2` (seconds)
-- `vanish=2.0` -> `vanish_timeout=2.0` (seconds; also the log lines' lifetime)
-- `capture=[:warn, :error]` -> `capture_logs=[:warn, :error]` (log interception)
+- `vanish=2.0` -> `vanish_timeout=2.0` (seconds)
 """
 function _canonical_progress_option(key, val)
     if key === :d
@@ -103,14 +102,8 @@ function _canonical_progress_option(key, val)
         # normalise e.g. `vanish_timeout=1` to Float64 for add_job!
         return (:vanish_timeout, float(val))
     elseif key === :vanish && val isa Real
-        # `vanish=2.0` is the numeric form of `vanish_timeout=2.0`: the timeout
-        # applies to both the bar and the log lines it holds.
+        # `vanish=2.0` is the numeric form of `vanish_timeout=2.0`.
         return (:vanish_timeout, float(val))
-    elseif key === :capture || key === :capture_logs
-        # which log levels are intercepted (`true`/`false`, a LogLevel, or a
-        # collection of levels/symbols). A macro-level option: it is never
-        # forwarded to `add_job!`.
-        return (:capture_logs, val)
     elseif key === :final_depth
         return (:final_depth, _coerce_final_depth(val))
     elseif key === :threads
@@ -139,8 +132,6 @@ function _parse_progress_args(args)
         :caps           => nothing,
         :head           => nothing,
         :width          => nothing,
-        :capture_logs   => nothing,
-        :log_file       => nothing,
         :io             => nothing,
     )
     # A bare symbol as the first argument binds a context variable:
@@ -166,26 +157,6 @@ where the caller is. That would send our names looking there too -- which is why
 GlobalRef needs no scope at all, so it does not care where it ends up.
 """
 _p(name::Symbol) = GlobalRef(@__MODULE__, name)
-
-# a Base.CoreLogging name: that is where the current logger actually lives
-_c(name::Symbol) = GlobalRef(Base.CoreLogging, name)
-
-"""
-    _scoped_logger(job_sym, capture, body) -> Expr
-
-The body of one level, run under a logger that captures into `job_sym`.
-
-Installed with Base.ScopedValues.@with rather than Logging.with_logger: @with is the
-closure-free form, so a return in the body returns from the caller's function rather than
-from a closure the macro slipped in. Its scopes stack, so nested levels shadow each other
-exactly as nested with_logger calls do.
-"""
-function _scoped_logger(job_sym, capture, body)
-    logstate = :($(_c(:LogState))($(_p(:ProgbioticLogger))($job_sym; capture = $capture)))
-    pair     = Expr(:call, :(=>), _c(:CURRENT_LOGSTATE), logstate)
-    return Expr(:macrocall, GlobalRef(Base.ScopedValues, Symbol("@with")), LineNumberNode(0),
-                pair, body)
-end
 
 # the level's theme: the package default is ours to name, a theme the caller gave is theirs
 _theme_expr(opts) = opts[:theme] === nothing ? _p(:AMBER) : opts[:theme]
@@ -301,12 +272,11 @@ end
     _build_level_block(parent, job_sym, opts, body_expr;
                        is_loop, iter_sym=nothing, iter=nothing, thread_ctx=nothing)
 
-Registers a job for one `@progress` level (a `for` loop or a `begin ... end`
-block), runs `body_expr` under it with a `ProgbioticLogger` installed so log
-records emitted inside the level are captured into its job, and on exit completes
-any pending statement subtasks and the job itself. When `thread_ctx` is a symbol,
-it is scoped-rebound to the new job for the duration of the block and restored
-afterwards, so contexts automatically track the innermost job.
+Registers a node for one `@progress` level (a `for` loop or a `begin ... end` block),
+runs `body_expr` under it with that node installed as the current bar, and on exit
+completes any pending statement subtasks and the node itself. When `thread_ctx` is a
+symbol, it is scoped-rebound to the new node for the duration of the block and restored
+afterwards, so a bound context automatically tracks the innermost node.
 
 A loop's total is inferred from its iterable. A block is marked a milestone container,
 and its total is however many milestones it registers, counted as they arrive.
@@ -332,10 +302,6 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
     rebind_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $job_sym)
     restore_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $saved_ctx)
-    # a log_file given at this level attaches (or re-attaches) the tree's sink: a sink
-    # belongs to the whole scope, so it is the root's however deep the level that asked
-    sink_call = opts[:log_file] === nothing ? :() :
-        :($(_p(:_ensure_log_sink!))($job_sym, $(opts[:log_file])))
 
     bindings = Any[:($saved_ctx = $(thread_ctx))]
 
@@ -344,19 +310,17 @@ function _build_level_block(parent, job_sym, opts, body_expr;
                        $(_p(:update!))($job_sym, $(_p(:pbtotal))($job_sym))
                    end)
 
-    # the level's body runs with a logger that captures log records into this level's
-    # node. Nested levels install their own logger, which shadows this one, so log calls
-    # always resolve to the innermost active node.
-    capture   = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
+    # the body runs with this level's node installed as the current bar, so that a bare
+    # set_postfix!() inside it attaches here. Nested levels install their own, which is
+    # what makes the innermost one win.
     saved_bar = gensym("saved_bar")
     body = quote
         let $(bindings...)
-            $sink_call
             $bind
             $rebind_ctx
             let $saved_bar = $(_p(:_install_bar!))($job_sym)
                 try
-                    $(_scoped_logger(job_sym, capture, body_expr))
+                    $body_expr
                 finally
                     $(_p(:_restore_bar!))($saved_bar)
                     $restore_ctx
@@ -376,7 +340,7 @@ function _build_level_block(parent, job_sym, opts, body_expr;
         # the outermost level *is* the tree, so building its node starts the render task
         # and running the body under it hands the terminal back when the scope ends
         root = :($(_p(:_root_bar))($total, $(opts[:title]), $(opts[:final_depth]),
-                                   $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
+                                   $(opts[:io]); $(node_kws...)))
         quote
             $job_sym = $root
             $(_p(:start_render!))($job_sym)
@@ -424,13 +388,6 @@ function _build_progress_level(m_args, parent,
         end
         if opts[:vanish_timeout] === nothing && parent_opts[:vanish_timeout] !== nothing
             opts[:vanish_timeout] = parent_opts[:vanish_timeout]
-        end
-        if opts[:capture_logs] === nothing && parent_opts[:capture_logs] !== nothing
-            opts[:capture_logs] = parent_opts[:capture_logs]
-        end
-        # A sink configured on an outer level keeps collecting on every inner one.
-        if opts[:log_file] === nothing && parent_opts[:log_file] !== nothing
-            opts[:log_file] = parent_opts[:log_file]
         end
     end
 
@@ -506,25 +463,21 @@ function _build_statement_block(parent, job_sym, opts)
                    _extract_extra_kws(opts)...]
 
     bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
-    sink_call = opts[:log_file] === nothing ? :() :
-        :($(_p(:_ensure_log_sink!))($job_sym, $(opts[:log_file])))
 
     if parent !== nothing
         return quote
             $job_sym = $(_p(:child))($parent, nothing; $(node_kws...))
-            $sink_call
             $bind
         end
     end
 
     # a bare `@progress "desc"` with no enclosing scope is a tree of one milestone
     root = :($(_p(:_root_bar))(nothing, $(opts[:title]), $(opts[:final_depth]),
-                               $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
+                               $(opts[:io]); $(node_kws...)))
     return quote
         $job_sym = $root
         $(_p(:start_render!))($job_sym)
         try
-            $sink_call
             $bind
         finally
             $(_p(:stop_render!))($job_sym)
@@ -663,23 +616,6 @@ screen with stale, finished sub-bars. Pass `vanish=false` to keep every bar on
 screen, or `vanish_timeout=<seconds>` to control how long finished bars linger.
 These options are inherited by nested `@progress` levels unless overridden.
 
-# log capture
-
-`@info`, `@debug`, `@warn` and `@error` calls inside a `@progress` scope are
-intercepted and drawn underneath the bar of the innermost active node, then pruned
-once that node's `vanish` timeout elapses:
-
-    @progress "Ingesting" total=100 vanish=2.0 for i in 1:100
-        i % 25 == 0 && @info "checkpoint at record \$i"
-    end
-
-`capture=` (alias `capture_logs=`) selects the levels that are drawn: `true`
-(default, every level), `false` (nothing — every record goes to the surrounding
-logger), a `LogLevel`, or a collection such as `[:warn, :error]`. Levels that
-are not captured are forwarded to the logger that was current when the scope was
-entered. Nested scopes capture independently, so inner logs belong to the inner
-bar and inherit its `vanish` timeout.
-
 # Postfix metrics
 
 set_postfix! attaches live key/value metrics to the innermost active bar. They are
@@ -689,19 +625,6 @@ so they are state rather than history and never clutter the scrollback:
     @progress "Training" total=100 for epoch in 1:100
         set_postfix!(loss = round(loss, digits = 4), lr = 1e-4)
     end
-
-# permanent logs
-
-Every intercepted record can also be appended, permanently and in plain text, to a
-file or a stream, so a line that has vanished from the screen still survives in the
-build log:
-
-    @progress "Ingesting" total=100 vanish=2.0 log_file="ingest.log" for i in 1:100
-        i % 25 == 0 && @info "checkpoint at record \$i"
-    end
-
-log_file accepts a path (opened in append mode, and closed when the scope ends) or
-any IO you own. Nested levels inherit the sink of the level that set it.
 
 # output stream
 
@@ -752,17 +675,17 @@ macro progress(args...)
 end
 
 """
-    _root_bar(total, title, final_depth, log_file, io; kwargs...) -> Progress
+    _root_bar(total, title, final_depth, io; kwargs...) -> Progress
 
-Build the node that roots a @progress tree. `io` and `log_file` are optional, so they are
-only forwarded when actually given; this keeps the generated code free of conditionals and
-lets the macro stay a pure AST transformation.
+Build the node that roots a @progress tree. `io` is optional, so it is only forwarded when
+actually given; this keeps the generated code free of conditionals and lets the macro stay
+a pure AST transformation.
 
 The root's own vanish defaults to nothing, which keeps the tree on screen for the whole
 scope, while `child_vanish = 0.5` is what its children get when they ask for none of their
 own.
 """
-function _root_bar(total, title, final_depth, log_file, io;
+function _root_bar(total, title, final_depth, io;
                    desc::AbstractString = "", theme::Theme = AMBER, kind::Symbol = :bar,
                    vanish = nothing, vanish_timeout = nothing, width::Integer = 0,
                    spinner = nothing, barunits = nothing, empty = nothing,
@@ -771,6 +694,6 @@ function _root_bar(total, title, final_depth, log_file, io;
                     final_depth = final_depth, child_vanish = 0.5, width = width,
                     theme = _apply_style(theme, spinner, barunits, empty, caps, head),
                     vanish = vanish, vanish_timeout = vanish_timeout,
-                    log_file = log_file, io = io === nothing ? stdout : io)
+                    io = io === nothing ? stdout : io)
 end
 

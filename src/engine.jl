@@ -24,52 +24,6 @@ const _CSI = "\e["
 """Position the cursor at a row and column, one-based."""
 _at(row::Int, col::Int = 1) = string(_CSI, row, ";", col, "H")
 
-# colours for intercepted log lines, by level.
-const _LOG_LEVEL_COLORS = Dict{Logging.LogLevel, String}(
-    Logging.Debug => "\e[34m",   # blue
-    Logging.Info  => "\e[36m",   # cyan
-    Logging.Warn  => "\e[33m",   # yellow
-    Logging.Error => "\e[31m",   # red
-)
-
-_log_color(level::Logging.LogLevel) =
-    get(_LOG_LEVEL_COLORS, level, _LOG_LEVEL_COLORS[Logging.Info])
-
-const _LOG_LEVEL_NAMES = Dict{Logging.LogLevel, String}(
-    Logging.Debug => "DEBUG",
-    Logging.Info  => "INFO",
-    Logging.Warn  => "WARN",
-    Logging.Error => "ERROR",
-)
-
-_log_level_name(level::Logging.LogLevel) = get(_LOG_LEVEL_NAMES, level, uppercase(string(level)))
-
-"""
-    format_plain_log_line(entry::LogEntry) -> String
-
-A log record as one plain, ANSI-free line, e.g.
-
-    [INFO] checkpoint at record 25
-
-This is the format used both for the persistent log_file sink and for every intercepted
-record in non-interactive mode: a CI log is a file, and a file should not contain cursor
-control sequences.
-"""
-function format_plain_log_line(entry::LogEntry)
-    return string("[", _log_level_name(entry.level), "] ", entry.message)
-end
-
-"""
-    format_log_line(entry::LogEntry) -> String
-
-A log record as a colour-coded line for the interactive display. The coloured bar glyph
-marks the line as progress output rather than user output.
-"""
-function format_log_line(entry::LogEntry)
-    return string(_log_color(entry.level), "▏", _log_level_name(entry.level), " ",
-                  entry.message, _ANSI_RESET)
-end
-
 # ---------------------------------------------------------------------------
 # terminal detection
 # ---------------------------------------------------------------------------
@@ -82,7 +36,7 @@ Whether the stream is an interactive terminal, i.e. whether ANSI cursor control 
 Julia's Base has no isatty; the idiomatic test is whether the stream is a Base.TTY (an
 IOContext is unwrapped first). Redirecting stdout to a file or a pipe -- or running under
 CI, where CI=true is conventionally exported -- turns this off, and the engine then
-emits flat, ANSI-free log lines instead.
+emits flat, ANSI-free lines instead.
 """
 _is_tty(io::IO) = _is_tty_impl(_unwrap_io(io))
 
@@ -278,24 +232,12 @@ end
 Non-interactive output for a whole tree: append a flat line for every node that has
 crossed another flat_step percent, plus one per node when forced, which is how the final
 100% lines are written.
-
-Intercepted log records are written out once, in the same plain format the log_file sink
-uses, and then dropped: in a file there is nothing to redraw them over.
 """
 function _draw_flat!(root::Progress; force::Bool = false)
     now_sec = time()
     symbols = get(TREE_STRS, root.root.style, TREE_STRS[:round])
     buffer  = IOBuffer()
     wrote   = false
-
-    # intercepted records are flushed for every node, visible or not: a bar that has
-    # already vanished from the screen still owns the lines it captured
-    for node in _all_nodes!(Progress[], root)
-        for entry in pending_logs!(node, now_sec)
-            print(buffer, format_plain_log_line(entry), "\n")
-            wrote = true
-        end
-    end
 
     for row in _tree_rows(root, symbols, false, now_sec)
         node = row.node
@@ -412,8 +354,7 @@ function _render_loop(root::Progress)
         end
     catch err
         # rendering must never take the user's computation down with it, and it must not
-        # log through the user's logger (which may be capturing into this very tree), so
-        # failures go straight to stderr.
+        # write through the user's logger, so failures go straight to stderr.
         try
             print(stderr, "Progbiotic: render task stopped: ", sprint(showerror, err), "\n")
         catch
@@ -433,10 +374,6 @@ function _render_loop(root::Progress)
             _release_gutter!(root)
         catch
         end
-        try
-            _close_log_sink!(root.root)
-        catch
-        end
     end
     return nothing
 end
@@ -444,8 +381,8 @@ end
 """
     root_of(node) -> Progress
 
-The node at the top of a tree. The render task, the gutter and the log sink all belong to
-it, and a child reaches it by walking up.
+The node at the top of a tree. The render task and the gutter belong to it, and a child
+reaches it by walking up.
 """
 function root_of(node::Progress)
     while node.parent !== nothing
@@ -470,8 +407,7 @@ function finish!(node::Progress; wait::Bool = !node.opts.tty)
     task = top.root.task
 
     if isfinished(node.state)
-        (wait && task !== nothing) && _wait_quietly(task)
-        task === nothing && _close_log_sink!(top.root)
+        wait && task !== nothing && _wait_quietly(task)
         return nothing
     end
 
@@ -490,11 +426,7 @@ function finish!(node::Progress; wait::Bool = !node.opts.tty)
     # dedupes on the percentage it last announced, and the gutter is ours to redraw.
     render_tick!(top; force = true)
 
-    if task === nothing
-        _close_log_sink!(top.root)
-    elseif wait
-        _wait_quietly(task)
-    end
+    wait && task !== nothing && _wait_quietly(task)
     return _release_empty_gutter!(top)
 end
 
@@ -526,7 +458,6 @@ function stop_render!(node::Progress)
 
     if task === nothing
         _release_gutter!(top)
-        _close_log_sink!(state)
     else
         _wait_quietly(task)
     end
