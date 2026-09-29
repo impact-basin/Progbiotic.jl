@@ -46,6 +46,258 @@ end
 [x^2 for x in ProgJob(rand(32,32), GLACIER; desc = "Squaring matrix elements!")]
 ```
 
+## Iterator interface (no macro required)
+
+`prog` wraps any iterable and infers its length, so an ordinary loop becomes a
+progress bar with no boilerplate:
+
+```julia
+for record in prog(1:1000; desc = "Parsing Records", vanish = 2.0)
+    # ...
+end
+```
+
+Collections with a known length (`HasLength` or `HasShape`) get a determinate bar
+with a percentage, a rate and an ETA. Unbounded or size-unknown sources - a
+`Channel`, an `Iterators.filter` - get an indeterminate spinner instead of a
+percentage that would be a lie:
+
+```julia
+stream = Channel(ch -> foreach(i -> put!(ch, i), 1:500))
+
+for item in prog(stream; desc = "Streaming Input")
+    # the spinner rotates until the channel closes
+end
+```
+
+`prog` forwards the collection's shape traits, so comprehensions, `collect`,
+indexing and `Threads.@threads` behave exactly as they do on the collection itself:
+
+```julia
+squares = [x^2 for x in prog(1:9001; desc = "Squaring")]
+
+Threads.@threads for i in prog(1:10_000; desc = "Parallel")
+    # ...
+end
+```
+
+Pass `total=n` to override the inference, or `total=nothing` to force spinner mode
+on a collection that does have a length. There is also a do-block form, which runs
+the whole loop inside a log-capturing scope:
+
+```julia
+prog(1:100; desc = "Training") do x
+    x == 50 && @info "halfway"
+end
+```
+
+## Manual handles
+
+When the work is not a simple loop over a collection, drive the bar yourself:
+
+```julia
+p = Progress(100; desc = "Custom Pipeline", layout = my_layout)
+for i in 1:100
+    next!(p)              # advance by one
+end
+finish!(p)
+
+update!(p, 42)            # or set an absolute value
+```
+
+`next!` is a single lock-free atomic add, so a handle can be advanced from any
+number of threads with no lock contention and no lost updates:
+
+```julia
+p = Progress(10_000; desc = "Parallel Processing")
+
+Threads.@threads for i in 1:10_000
+    next!(p)
+end
+
+finish!(p)
+```
+
+The do-block form finishes the bar for you, even if the body throws:
+
+```julia
+Progress(100; desc = "Training") do p
+    for i in 1:100
+        next!(p)
+    end
+end
+```
+
+## Dynamic status with `set_postfix!`
+
+`set_postfix!` attaches live key/value metrics to the active bar. They are
+overwritten on every call, so they are *state* rather than history and never clutter
+the scrollback:
+
+```julia
+@progress "Model Training" total=100 vanish=3.0 log_file="train.log" for epoch in 1:100
+    loss = 1.0 / epoch
+    acc = 0.5 + (epoch / 200)
+
+    set_postfix!(loss = round(loss, digits = 4), accuracy = "$(round(acc*100, digits=1))%")
+end
+```
+
+With no argument the metrics go to the innermost active bar: inside a `@progress`
+scope, the job of the innermost level; inside a `prog(...)` or `Progress(...)`
+scope, that bar. Pass a bar explicitly (`set_postfix!(p; ...)`) to target a
+particular one.
+
+## Column layouts
+
+A bar is a list of columns joined left-to-right. Build your own out of the pieces
+shipped with the package:
+
+```julia
+my_layout = [
+    SpinnerColumn(:dots),
+    TextColumn("{desc}"),
+    BarColumn(fill='█', empty='░', width=30),
+    PercentageColumn(),
+    RateColumn(unit="it/s"),
+    ETAColumn(),
+    PostfixColumn(),
+]
+
+p = Progress(100; layout = my_layout, desc = "Custom Pipeline", vanish = 1.0)
+for i in 1:100
+    sleep(0.01)
+    next!(p)
+end
+finish!(p)
+```
+
+| Column | Renders |
+|--------|---------|
+| `SpinnerColumn(style)` | an animated glyph; styles include `:dots`, `:line`, `:arc`, `:clock`, `:moon` |
+| `TextColumn(template)` | `{desc}`, `{n}`, `{total}`, `{pct}`, `{elapsed}`, `{postfix}` |
+| `BarColumn(fill, empty, width)` | the bar, or a bouncing marquee when the total is unknown |
+| `PercentageColumn(digits)` | `45.2%%` |
+| `RateColumn(unit)` | `12.3 it/s`, or `1.5 s/it` below one item per second |
+| `ETAColumn()` | `ETA 00:01:23` |
+| `PostfixColumn()` | the metrics set by `set_postfix!` |
+
+Adding your own is two lines:
+
+```julia
+struct HeartbeatColumn <: Progbiotic.AbstractColumn end
+
+Progbiotic.render_column(::HeartbeatColumn, state::Progbiotic.ProgressState) =
+    state.total === nothing ? "?" : "$(round(Int, 100 * state.current[] / state.total))%"
+```
+
+A column only ever reads the atomic state, so it must be cheap and must not block.
+
+## Persistent log sinks
+
+Log lines drawn in the terminal are transient: they vanish once the scope's `vanish`
+timeout elapses or the bar is erased. Pass `log_file` and every intercepted record
+is *also* appended, permanently and in plain text, to that file or stream:
+
+```julia
+@progress "Ingesting records" total=100 vanish=2.0 log_file="ingest.log" for i in 1:100
+    i % 25 == 0 && @info "checkpoint at record $i"
+end
+```
+
+The screen shows the checkpoints for two seconds; `ingest.log` keeps them:
+
+```text
+[INFO] checkpoint at record 25
+[INFO] checkpoint at record 50
+[INFO] checkpoint at record 75
+[INFO] checkpoint at record 100
+```
+
+The same option is accepted by `prog` and `Progress`, and by the
+`ProgBar` constructor. `log_file` may be a path (opened in append mode and
+closed when the bar is torn down) or any `IO` you own.
+
+## Capturing logs outside the macro
+
+A `@progress` scope installs its own logger, so it intercepts `@info`,
+`@warn` and friends automatically. So that a bare `prog(...)` or
+`Progress(...)` loop does the same, Progbiotic wraps the process-wide logger once,
+at load time. The wrapper is completely transparent while no bar is running: it defers
+level filtering to the logger it wraps and forwards every record untouched. When a bar
+*is* running, records are drawn under it (and written to its `log_file`).
+
+```julia
+log_capture_enabled()    # true after "using Progbiotic"
+disable_log_capture!()   # hand logging back to the ordinary logger
+enable_log_capture!()    # put the capture layer back
+```
+
+Set `PROGBIOTIC_CAPTURE_LOGS=false` in the environment to load Progbiotic with the
+layer switched off. To capture into one specific bar instead, use the explicit scope
+form, or the `prog`/`Progress` do-block form:
+
+```julia
+p = Progress(100)
+with_progress_logging(p) do
+    for i in 1:100
+        next!(p)
+        i == 50 && @info "halfway"
+    end
+end
+```
+
+### `ProgressLogging.jl`
+
+Progbiotic understands the ProgressLogging protocol in both of its released shapes:
+records whose message is a `ProgressLogging.Progress`, and records carrying a
+`progress` (or older `_progress`) keyword argument. Such a record updates the
+bar instead of producing a line, and `ProgressLogging.jl` is not a dependency.
+
+```julia
+@info "iterating" progress = 0.5     # drives the active bar to 50%
+```
+
+## Terminal vs. CI
+
+The engine detects whether its output stream is an interactive terminal (and whether
+`CI` is set). On a terminal it redraws the bar in place with ANSI cursor control
+and draws transient log lines underneath it. Anywhere else - a pipe, a redirected
+file, a CI build - it emits flat, append-only lines and *not a single escape
+sequence*:
+
+```text
+[INFO] Parsing Records 0% (0/1000)
+[INFO] Parsing Records 25% (250/1000) 412.5 it/s ETA 00:00:01
+[INFO] checkpoint at record 500
+[INFO] Parsing Records 100% (1000/1000) 398.1 it/s ETA 00:00:00
+```
+
+One line is emitted per `flat_step` percent (default 10), so a ten-million-iteration
+loop adds eleven lines to a build log rather than thousands. Force either mode with
+`tty=true` / `tty=false`, and use `io=` to send a bar anywhere.
+
+## Threads and overhead
+
+The computational loop never touches the terminal. Advancing a bar is a single
+lock-free `Threads.Atomic` add, and drawing happens on a separate task that wakes at
+most `fps` times a second (default 20). Log appends take one short lock; every
+terminal write happens under another, from a single renderer.
+
+That means a `Threads.@threads` loop can advance one bar from every worker with no
+lock contention and no lost updates, and log from every worker without tearing the
+display - and a fine-grained loop over `10^7` items pays for a handful of atomic
+adds per item and nothing else.
+
+By default the renderer is an async task, which runs exactly when the loop yields -
+that is, when terminal I/O is free - and costs nothing at all while a tight loop is
+running. Pass `threaded=true` to render from a separate thread instead, which keeps
+the bar animating during a long computation that never yields.
+
+```julia
+p = Progress(10^7; desc = "Long computation", threaded = true)
+```
+
 ## Macro interface
 
 The `@progress` macro is exported to wrap for loops. This macro manipulates the AST to place `@progress` invocations within that loop into the context of the outer progress tree.
@@ -131,7 +383,9 @@ The `@progress` keyword options accept short aliases:
 | `t=OCEAN`    | `theme=OCEAN`    | use the OCEAN theme                            |
 
 `v` can be set to a number or a boolean. A number sets the vanish timeout in seconds and a boolean
-switches vanishing on/off.
+switches vanishing on/off. The full names work as well: `vanish_timeout=2.0` (or
+`vanish=2.0`) sets the timeout for both a bar and the log lines it holds, and
+`vanish=false` keeps them on screen.
 
 An example usage:
 
@@ -142,6 +396,42 @@ An example usage:
     end
 end
 ```
+
+## Log capture
+
+`@info`, `@debug`, `@warn` and `@error` calls made inside a `@progress` scope are
+intercepted and drawn underneath the bar of the innermost active job. Each log line
+is pruned with the `vanish` timeout of the scope it was emitted in and is
+colour-coded by level (cyan `@info`, yellow `@warn`, blue `@debug`, red `@error`).
+
+```julia
+# Log lines appear under the bar and disappear with it (here after 2.0s)
+@progress "Ingesting records" total=100 vanish=2.0 for i in 1:100
+    i % 25 == 0 && @info "checkpoint at record $i"
+    i == 87 && @warn "malformed record, applying fallback"
+end
+
+# Nested scopes keep independent log streams, each with its own timeout
+@progress "Batch run" total=5 vanish=10.0 for batch in 1:5
+    @info "starting batch $batch"                     # outer bar, 10.0s
+    @progress "Processing items" total=50 vanish=1.5 for item in 1:50
+        item == 13 && @debug "cache miss for item 13" # inner bar, 1.5s
+    end
+end
+
+# Capture only some levels: everything else reaches the normal logger unchanged
+@progress "Reindexing" total=1000 capture=[:warn, :error] for id in 1:1000
+    @info "processing $id"                # printed to the terminal as usual
+    id == 404 && @warn "entity missing"   # captured under the bar
+end
+```
+
+`capture=` (alias `capture_logs=`) accepts `true` (the default — every level),
+`false` (nothing is captured), a `LogLevel`, or a collection such as
+`[:warn, :error]`. The option is inherited by nested `@progress` levels unless
+overridden. Intercepted records are buffered per job in `pbar.logs`, and the
+`push_log!`, `prune_logs!` and `active_logs` functions are exported for working
+with a `ProgContext` (or `ProgBar`) directly.
 
 # Notes
 

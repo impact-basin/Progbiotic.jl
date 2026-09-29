@@ -13,6 +13,15 @@ the bottom of the terminal.
 - `style`: tree-drawing style (`:round` or `:square`).
 - `dt`: minimum seconds between gutter redraws (throttle).
 - `io`: output stream (defaults to `stdout`).
+- `log_file`: a path or `IO` every intercepted log record is appended to,
+  permanently and in plain text, even after it has vanished from the screen.
+- `background`: draw from a background task (the default) so the computational
+  loop never blocks on terminal I/O.
+
+When `io` is not a terminal the gutter is replaced by flat, ANSI-free lines.
+
+Log records intercepted inside `@progress` scopes are buffered per job in
+`pbar.logs` (a [`ProgLogStore`](@ref)) and drawn under the bar they belong to.
 
 Use [`add_job!`](@ref) to build the tree, [`update!`](@ref) to advance jobs, and
 [`with_tree_gutter`](@ref) to pin the tree to the terminal while work runs.
@@ -35,13 +44,27 @@ mutable struct ProgBar
     last_gutter_start :: Int
     io                :: IO
     active            :: Bool
+    logs              :: ProgLogStore
+    log_file          :: Union{String, IO, Nothing}
+    log_sink          :: Union{IO, Nothing}
+    sink_lock         :: ReentrantLock
+    background        :: Bool
+    interactive       :: Bool
+    flat_step         :: Int
+    flat_states       :: Dict{ProgJob, Int}
+    running           :: Threads.Atomic{Bool}
+    task              :: Union{Task, Nothing}
 
     function ProgBar(title::String = "";
                      vanish_timeout::Union{Float64, Nothing} = nothing, # e.g. 1.0 or nothing
                      final_depth::Int = 0, # how many levels of children to keep once a job completes
                      style::Symbol = :round,
                      dt::Float64 = 0.05,
-                     io::IO = stdout)
+                     io::IO = stdout,
+                     log_file = nothing,   # path or IO: permanent plain-text log sink
+                     background::Bool = true, # render from a background task
+                     flat_step::Int = 10)     # percent between flat lines when not a TTY
+        sink, destination = _open_log_sink(log_file)
         new(title,
             ReentrantLock(),
             Dict{ProgJob, Union{ProgJob, Nothing}}(),
@@ -58,7 +81,17 @@ mutable struct ProgBar
             0.0,
             typemax(Int),
             io,
-            false)
+            false,
+            ProgLogStore(),
+            destination,
+            sink,
+            ReentrantLock(),
+            background,
+            true,
+            flat_step,
+            Dict{ProgJob, Int}(),
+            Threads.Atomic{Bool}(false),
+            nothing)
     end
 end
 
@@ -123,9 +156,7 @@ function add_job!(pbar::ProgBar, iter_or_desc;
     # shows as active at a time.
     _complete_statement_jobs!(pbar, parent)
 
-    if pbar.active
-        print_progbar_in_gutter(pbar; force=true)
-    end
+    _request_gutter_refresh(pbar; force = true)
     return job
 end
 
@@ -245,15 +276,19 @@ function is_job_visible(pbar::ProgBar, job::ProgJob, now_sec::Float64)
     any_child_visible = any(c -> is_job_visible(pbar, c, now_sec), children)
     any_child_visible && return true
 
-    # 2. Jobs within the configured final depth are retained regardless of their
+    # 2. A job holding live log lines stays visible until they expire, so an
+    #    intercepted log is never cut short by its bar vanishing first.
+    has_active_logs(pbar, job, now_sec) && return true
+
+    # 3. Jobs within the configured final depth are retained regardless of their
     #    vanish timeout: `final_depth=N` promises to keep N levels of children.
     _job_depth(pbar, job) <= pbar.final_depth && return true
 
-    # 3. If no vanish timeout is set, it stays visible forever
+    # 4. If no vanish timeout is set, it stays visible forever
     timeout = get(pbar.vanish_timeouts, job, nothing)
     timeout === nothing && return true
 
-    # 4. Check completion timestamp
+    # 5. Check completion timestamp
     comp_time = get(pbar.completed_at, job, nothing)
     if comp_time === nothing
         @lock job.lock begin
@@ -264,7 +299,7 @@ function is_job_visible(pbar::ProgBar, job::ProgJob, now_sec::Float64)
         return true
     end
 
-    # 4. Check if within timeout window
+    # 6. Check if within timeout window
     return (now_sec - comp_time) < timeout
 end
 
@@ -303,6 +338,9 @@ function render_progbar_tree(pbar::ProgBar; bar_width::Int = 40, collapse_comple
     end
     buf = IOBuffer()
     now_sec = time()
+    # Drop expired log lines before measuring the tree: the gutter's height (and so
+    # the area it clears) must match the lines that are actually drawn.
+    prune_logs!(pbar, now_sec)
 
     top_jobs = get_visible_children(pbar, nothing, now_sec)
 
@@ -322,6 +360,7 @@ function render_progbar_tree(pbar::ProgBar; bar_width::Int = 40, collapse_comple
         root_job = top_jobs[1]
         job_rendered = show_progjob_with_theme(root_job, root_job.theme; bar_width = bar_width, desc_width = desc_width)
         println(buf, job_rendered)
+        _render_job_logs(buf, pbar, root_job, "", syms, now_sec)
 
         # Children branch directly from the root (kept unless the root is done and
         # the requested final depth has been reached)
@@ -363,6 +402,9 @@ function _render_job_nodes(
 
         job_rendered = show_progjob_with_theme(job, job.theme; bar_width = bar_width, desc_width = desc_width)
         println(io, prefix, branch, job_rendered)
+
+        # Intercepted log lines are drawn directly beneath the bar they belong to.
+        _render_job_logs(io, pbar, job, prefix * extension, syms, now_sec)
 
         # In collapse mode a finished job hides its subtree, keeping only
         # `final_depth` levels of children below the top of the tree.
@@ -506,7 +548,7 @@ function update!(pbar::ProgBar, job::ProgJob, new::Union{Int, Nothing} = nothing
             pbar.completed_at[job] = time()
         end
     end
-    print_progbar_in_gutter(pbar)
+    _request_gutter_refresh(pbar)
 end
 
 
@@ -520,20 +562,199 @@ Restores the terminal scroll margin upon completion.
 function with_tree_gutter(f::Function, pbar::ProgBar; io::IO = pbar.io)
     pbar.active = true
     pbar.io = io
+    pbar.interactive = _is_tty(io)
     pbar.last_gutter_start = typemax(Int)
-    print_progbar_in_gutter(pbar; force=true)
-
     term_height, _ = displaysize(io)
+
+    if !pbar.interactive
+        # Non-interactive: nothing to reserve and nothing to redraw, so every
+        # update is an append-only flat line with no escape sequences at all.
+        _start_gutter_task!(pbar)
+        try
+            return f()
+        finally
+            stop_gutter!(pbar)
+            pbar.active = false
+            _print_flat_tree!(pbar; force = true)
+        end
+    end
+
+    print_progbar_in_gutter(pbar; force = true)
+    _start_gutter_task!(pbar)
     try
-        f()
+        return f()
     finally
+        stop_gutter!(pbar)
         pbar.active = false
-        print_progbar_in_gutter(pbar; force=true)
+        print_progbar_in_gutter(pbar; force = true)
         # Reset scroll region and move cursor to the end
         print(io, "\e[r")
         print(io, "\e[", term_height, ";1H\n")
         flush(io)
     end
+end
+
+"""
+    _request_gutter_refresh(pbar; force = false)
+
+Ask for the gutter to be redrawn.
+
+With background rendering on - the default - this is a no-op: the render task owns
+the terminal, and the computational loop must never block on it.  Turn background
+rendering off and the refresh happens inline, throttled by the bar's own dt, which
+is what the original synchronous renderer did.
+"""
+function _request_gutter_refresh(pbar::ProgBar; force::Bool = false)
+    pbar.active || return nothing
+    pbar.background && return nothing
+    return pbar.interactive ? print_progbar_in_gutter(pbar; force = force) :
+                              _print_flat_tree!(pbar; force = force)
+end
+
+"""Start the background gutter render task, unless background rendering is off."""
+function _start_gutter_task!(pbar::ProgBar)
+    pbar.background || return nothing
+    pbar.running[] = true
+    # Flat output is append-only, so it is safe to write it from another thread and
+    # it keeps updating during a long, never-yielding loop.  Cursor control is not:
+    # an async task can only redraw when the computational loop yields, which is
+    # also exactly when interleaving with the user's own output is impossible.
+    pbar.task = (!pbar.interactive && Threads.nthreads() > 1) ?
+        Threads.@spawn(_gutter_loop(pbar)) : (@async _gutter_loop(pbar))
+    return nothing
+end
+
+"""
+    _gutter_loop(pbar)
+
+The tree renderer's background loop.  It is an async task, so it only runs when
+the computational loop yields - which is exactly when terminal I/O is free - and it
+costs nothing at all while a tight loop is running.
+"""
+function _gutter_loop(pbar::ProgBar)
+    while pbar.running[]
+        try
+            if pbar.interactive
+                print_progbar_in_gutter(pbar)
+            else
+                _print_flat_tree!(pbar)
+            end
+        catch
+            # A rendering failure must never take the user's computation down.
+        end
+        sleep(pbar.dt)
+    end
+    return nothing
+end
+
+"""Stop the background gutter render task and wait for it to finish."""
+function stop_gutter!(pbar::ProgBar)
+    pbar.running[] = false
+    task = pbar.task
+    pbar.task = nothing
+    task === nothing && return nothing
+    try
+        Base.wait(task)
+    catch
+    end
+    return nothing
+end
+
+"""Every visible job, paired with its depth in the tree (depth-first)."""
+function _flat_job_list!(out::Vector{Tuple{ProgJob, Int}}, pbar::ProgBar, parent,
+                         depth::Int, now_sec::Float64)
+    for job in get_visible_children(pbar, parent, now_sec)
+        push!(out, (job, depth))
+        _flat_job_list!(out, pbar, job, depth + 1, now_sec)
+    end
+    return out
+end
+
+"""One job as a plain, ANSI-free line, e.g. "[INFO] Training 40% (4/10)"."""
+function _flat_job_line(job::ProgJob, depth::Int)
+    job_state, total, desc = @lock job.lock (job.state, job.total, job.desc)
+    isempty(desc) && (desc = "Progress")
+    indent = repeat("  ", depth)
+    if total === nothing
+        return string("[INFO] ", indent, desc, " ", max(job_state, 1), " (indeterminate)")
+    end
+    done = clamp(job_state, 0, total)
+    percentage = total > 0 ? floor(Int, 100 * done / total) : 100
+    return string("[INFO] ", indent, desc, " ", percentage, "% (", done, "/", total, ")")
+end
+
+"""
+    _pending_tree_logs!(pbar) -> Vector{ProgressLogEntry}
+
+Mark and return every buffered tree log record the flat renderer has not written
+yet, oldest first.  Entries are marked rather than removed: a scope's captured
+records stay inspectable through active_logs even though they have already been
+streamed out.
+"""
+function _pending_tree_logs!(pbar::ProgBar)
+    store = pbar.logs
+    pending = ProgressLogEntry[]
+    @lock store.lock begin
+        for buffer in values(store.buffers)
+            for entry in buffer
+                entry.printed && continue
+                entry.printed = true
+                push!(pending, entry)
+            end
+        end
+    end
+    sort!(pending, by = entry -> entry.created_at)
+    return pending
+end
+
+"""
+    _print_flat_tree!(pbar; force = false)
+
+Non-interactive rendering for the tree engine: flat, append-only lines and not a
+single escape sequence, so a CI log stays readable and greppable.
+
+A bar emits a line when it crosses another flat_step percent, plus one when it
+first appears and one when it completes.  Intercepted log records are written out
+once, in the same plain format the log_file sink uses.
+"""
+function _print_flat_tree!(pbar::ProgBar; force::Bool = false)
+    now_sec = time()
+    buffer = IOBuffer()
+    wrote = false
+
+    for entry in _pending_tree_logs!(pbar)
+        print(buffer, format_plain_log_line(entry), "\n")
+        wrote = true
+    end
+
+    for (job, depth) in _flat_job_list!(Tuple{ProgJob, Int}[], pbar, nothing, 0, now_sec)
+        job_state, total = @lock job.lock (job.state, job.total)
+        percentage = total === nothing ? -1 :
+                     (total > 0 ? floor(Int, 100 * clamp(job_state, 0, total) / total) : 100)
+        previous = get(pbar.flat_states, job, nothing)
+        emit = if previous === nothing
+            true
+        elseif percentage < 0
+            force && previous < 0
+        elseif force
+            previous < percentage || (percentage >= 100 && previous < 100)
+        else
+            percentage >= previous + pbar.flat_step ||
+                (percentage >= 100 && previous < 100)
+        end
+        emit || continue
+        pbar.flat_states[job] = percentage
+        print(buffer, _flat_job_line(job, depth), "\n")
+        wrote = true
+    end
+
+    wrote || return false
+    @lock pbar.lock begin
+        write(pbar.io, take!(buffer))
+        flush(pbar.io)
+    end
+    pbar.last_render = now_sec
+    return true
 end
 
 # Base container & iterator interfaces for ProgBar
@@ -554,19 +775,5 @@ function Base.show(io::IO, pbar::ProgBar)
     print(io, n, " job", n == 1 ? "" : "s", ", ", roots, " root", roots == 1 ? "" : "s", ")")
 end
 
-"""
-    ProgContext(pbar::ProgBar, parent::Union{ProgJob, Nothing})
-
-Hierarchical context handle for passing a progress bar and its active parent node to subroutines.
-"""
-struct ProgContext
-    pbar   :: ProgBar
-    parent :: Union{ProgJob, Nothing}
-end
-
-# Forward helper methods so subroutines can interact directly with the context
-add_job!(ctx::ProgContext, iter_or_desc; parent=ctx.parent, kwargs...) =
-    add_job!(ctx.pbar, iter_or_desc; parent=parent, kwargs...)
-
-update!(ctx::ProgContext, args...) = update!(ctx.pbar, args...)
-print_progbar_in_gutter(ctx::ProgContext; kwargs...) = print_progbar_in_gutter(ctx.pbar; kwargs...)
+# `ProgContext` — the hierarchical context handle, including the log buffer used
+# to capture `@info`/`@warn`/... records — is defined in `src/context.jl`.

@@ -35,6 +35,7 @@ mutable struct ProgJob{I}
     dt          :: Float64
     last_render :: Float64
     io          :: IO
+    postfix     :: Dict{Symbol, Any}
 
     # Standalone job (no iterator wrapped)
     function ProgJob(desc::String = "";
@@ -46,7 +47,8 @@ mutable struct ProgJob{I}
                      dt::Float64 = 0.05, io::IO = stdout)
         now = time()
         new{Nothing}(ReentrantLock(), desc, 0, total, now, 0.0, now,
-                     nothing, _apply_style(theme, spinner, barunits, empty, caps, head), width, dt, 0.0, io)
+                     nothing, _apply_style(theme, spinner, barunits, empty, caps, head), width, dt, 0.0, io,
+                     Dict{Symbol, Any}())
     end
 
     # Iterator-wrapping job: ProgJob(iter, [theme]; desc="...", dt=0.05, io=stdout)
@@ -60,7 +62,8 @@ mutable struct ProgJob{I}
         tot = total !== nothing ? total : try length(iter) catch; nothing end
         now = time()
         new{I}(ReentrantLock(), desc, 0, tot, now, 0.0, now,
-               iter, _apply_style(theme, spinner, barunits, empty, caps, head), width, dt, 0.0, io)
+               iter, _apply_style(theme, spinner, barunits, empty, caps, head), width, dt, 0.0, io,
+               Dict{Symbol, Any}())
     end
 end
 
@@ -176,6 +179,18 @@ function Base.getindex(job::ProgJob, idx...)
     return val
 end
 
+"""
+    _postfix_suffix(metrics::AbstractDict) -> String
+
+Render dynamic metrics as a trailing "[loss=0.041, lr=0.0001]" suffix, or an empty
+string when there are none, so a bar that never calls set_postfix! renders exactly
+as it did before the feature existed.
+"""
+function _postfix_suffix(metrics::AbstractDict)
+    isempty(metrics) && return ""
+    return string(" [", join((string(k, "=", v) for (k, v) in metrics), ", "), "]")
+end
+
 function _ansi_fg(c::Color)
     rgb = RGB(c)
     r = round(Int, Colors.red(rgb) * 255)
@@ -264,9 +279,10 @@ takes precedence over the passed `bar_width`.
 """
 function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc_width::Int = 14, rate_width::Int = 10)
     # Thread-safe snapshot of job state
-    desc, state, total, start_time, finish_time, last_update, job_width = lock(p.lock) do
-        (p.desc, p.state, p.total, p.start, p.finish, p.last_update, p.bar_width)
+    desc, state, total, start_time, finish_time, last_update, job_width, metrics = lock(p.lock) do
+        (p.desc, p.state, p.total, p.start, p.finish, p.last_update, p.bar_width, copy(p.postfix))
     end
+    postfix = _postfix_suffix(metrics)
     bar_width = job_width !== nothing ? job_width : bar_width
 
     now_sec = time()
@@ -308,7 +324,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
         else
             eta_str = string(_ANSI_DIM, "done in ", duration_str(run_elapsed, show_ms=true), _ANSI_RESET)
         end
-        return "$blinker_str $desc_str$prog_str $eta_str"
+        return "$blinker_str $desc_str$prog_str $eta_str$postfix"
     else
         # Determinate mode
         prog = total > 0 ? (state / total) : 1.0
@@ -333,7 +349,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
     end
 
     # Return full rendered line: [blinker] [desc] [progress] [rate] [eta]
-    return "$blinker_str $desc_str$prog_str [$(rpad(rate_str, rate_width))] $eta_str"
+    return "$blinker_str $desc_str$prog_str [$(rpad(rate_str, rate_width))] $eta_str$postfix"
 end
 
 # Advances a job's state under its lock, stamps `last_update`, and reports whether

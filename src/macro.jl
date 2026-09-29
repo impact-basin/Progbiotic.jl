@@ -62,6 +62,8 @@ Maps short-form option names to their full names and normalises values:
 - `t=OCEAN` -> `theme=OCEAN`
 - `v=false` -> `vanish=false`      (keep bars on screen)
 - `v=1.2`   -> `vanish_timeout=1.2` (seconds)
+- `vanish=2.0` -> `vanish_timeout=2.0` (seconds; also the log lines' lifetime)
+- `capture=[:warn, :error]` -> `capture_logs=[:warn, :error]` (log interception)
 """
 function _canonical_progress_option(key, val)
     if key === :d
@@ -79,6 +81,15 @@ function _canonical_progress_option(key, val)
     elseif key === :vanish_timeout && val isa Real
         # Normalise e.g. `vanish_timeout=1` to Float64 for add_job!
         return (:vanish_timeout, float(val))
+    elseif key === :vanish && val isa Real
+        # `vanish=2.0` is the numeric form of `vanish_timeout=2.0`: the timeout
+        # applies to both the bar and the log lines it holds.
+        return (:vanish_timeout, float(val))
+    elseif key === :capture || key === :capture_logs
+        # Which log levels are intercepted (`true`/`false`, a LogLevel, or a
+        # collection of levels/symbols). A macro-level option: it is never
+        # forwarded to `add_job!`.
+        return (:capture_logs, val)
     elseif key === :final_depth
         return (:final_depth, _coerce_final_depth(val))
     elseif key === :threads
@@ -103,6 +114,9 @@ function _parse_progress_args(args)
         :caps           => nothing,
         :head           => nothing,
         :width          => nothing,
+        :capture_logs   => nothing,
+        :log_file       => nothing,
+        :io             => nothing,
     )
     # A bare symbol as the first argument binds a context variable:
     # `@progress ctx "desc" ...` is shorthand for `@progress (ctx => "desc") ...`.
@@ -202,10 +216,11 @@ end
                        milestone_count=0, thread_ctx=nothing)
 
 Registers a job for one `@progress` level (a `for` loop or a `begin ... end`
-block), runs `body_expr` under it, and on exit completes any pending statement
-subtasks and the job itself. When `thread_ctx` is a symbol, it is scoped-rebound
-to the new job for the duration of the block and restored afterwards, so contexts
-automatically track the innermost job.
+block), runs `body_expr` under it with a `ProgbioticLogger` installed so log
+records emitted inside the level are captured into its job, and on exit completes
+any pending statement subtasks and the job itself. When `thread_ctx` is a symbol,
+it is scoped-rebound to the new job for the duration of the block and restored
+afterwards, so contexts automatically track the innermost job.
 
 A loop job's total is inferred from its iterable; a block job's total is
 `max(1, milestone_count)` — the number of `@progress "desc"` milestones it
@@ -221,6 +236,9 @@ function _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
     bind_assignment = opts[:bind] !== nothing ?
         :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
     extra_kws = _extract_extra_kws(opts)
+    # A log_file given at this level attaches (or re-attaches) the persistent sink.
+    sink_call = opts[:log_file] === nothing ? :() :
+        :(Progbiotic._ensure_log_sink!($pbar_sym, $(opts[:log_file])))
 
     saved_ctx = gensym("saved_ctx")
     rebind_ctx = thread_ctx === nothing ? :() : :($thread_ctx = Progbiotic.ProgContext($pbar_sym, $job_sym))
@@ -248,14 +266,24 @@ function _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
         mark = milestone_count > 0 ? :(Progbiotic._mark_container!($pbar_sym, $job_sym)) : :()
     end
 
+    # The level's body runs with a logger that captures log records into this
+    # level's job. Nested levels install their own logger, which shadows this one,
+    # so log calls always resolve to the innermost active context.
+    log_context = :(Progbiotic.ProgContext($pbar_sym, $job_sym))
+    capture_expr = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
+    logged_body = :(Progbiotic._with_log_capture($log_context, $capture_expr) do
+        $body_expr
+    end)
+
     return quote
         let $(bindings...)
             $job_call
             $mark
+            $sink_call
             $bind_assignment
             $rebind_ctx
             try
-                $body_expr
+                $logged_body
             finally
                 $restore_ctx
                 Progbiotic._complete_statement_jobs!($pbar_sym, $job_sym)
@@ -316,6 +344,13 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
         end
         if opts[:vanish_timeout] === nothing && parent_opts[:vanish_timeout] !== nothing
             opts[:vanish_timeout] = parent_opts[:vanish_timeout]
+        end
+        if opts[:capture_logs] === nothing && parent_opts[:capture_logs] !== nothing
+            opts[:capture_logs] = parent_opts[:capture_logs]
+        end
+        # A sink configured on an outer level keeps collecting on every inner one.
+        if opts[:log_file] === nothing && parent_opts[:log_file] !== nothing
+            opts[:log_file] = parent_opts[:log_file]
         end
     end
 
@@ -390,10 +425,13 @@ function _build_statement_block(pbar_sym, job_sym, opts, parent_job_sym)
     for key in (:spinner, :barunits, :empty, :caps, :head, :width, :vanish, :vanish_timeout)
         opts[key] !== nothing && push!(stmt_kws, Expr(:kw, key, opts[key]))
     end
+    sink_call = opts[:log_file] === nothing ? :() :
+        :(Progbiotic._ensure_log_sink!($pbar_sym, $(opts[:log_file])))
     return quote
         $job_sym = Progbiotic._statement_job($pbar_sym, $parent_job_sym;
                                              desc = $(opts[:desc]), theme = $(opts[:theme]),
                                              $(stmt_kws...))
+        $sink_call
         $bind_assignment
     end
 end
@@ -527,6 +565,59 @@ screen with stale, finished sub-bars. Pass `vanish=false` to keep every bar on
 screen, or `vanish_timeout=<seconds>` to control how long finished bars linger.
 These options are inherited by nested `@progress` levels unless overridden.
 
+# Log capture
+
+`@info`, `@debug`, `@warn` and `@error` calls inside a `@progress` scope are
+intercepted and drawn underneath the bar of the innermost active job, then pruned
+once that scope's `vanish` timeout elapses:
+
+    @progress "Ingesting" total=100 vanish=2.0 for i in 1:100
+        i % 25 == 0 && @info "checkpoint at record \$i"
+    end
+
+`capture=` (alias `capture_logs=`) selects the levels that are drawn: `true`
+(default, every level), `false` (nothing — every record goes to the surrounding
+logger), a `LogLevel`, or a collection such as `[:warn, :error]`. Levels that
+are not captured are forwarded to the logger that was current when the scope was
+entered. Nested scopes capture independently, so inner logs belong to the inner
+bar and inherit its `vanish` timeout.
+
+# Postfix metrics
+
+set_postfix! attaches live key/value metrics to the innermost active bar. They are
+rendered inline on the right-hand side of the line and overwritten on every call,
+so they are state rather than history and never clutter the scrollback:
+
+    @progress "Training" total=100 for epoch in 1:100
+        set_postfix!(loss = round(loss, digits = 4), lr = 1e-4)
+    end
+
+# Permanent logs
+
+Every intercepted record can also be appended, permanently and in plain text, to a
+file or a stream, so a line that has vanished from the screen still survives in the
+build log:
+
+    @progress "Ingesting" total=100 vanish=2.0 log_file="ingest.log" for i in 1:100
+        i % 25 == 0 && @info "checkpoint at record \$i"
+    end
+
+log_file accepts a path (opened in append mode, and closed when the scope ends) or
+any IO you own. Nested levels inherit the sink of the level that set it.
+
+# Output stream
+
+A scope draws to stdout by default. Pass io= to send it elsewhere, which is mainly
+useful in tests and in library code that manages its own streams:
+
+    @progress "Silent" total=10 io=IOBuffer() for i in 1:10
+        ...
+    end
+
+When the stream is not an interactive terminal - a pipe, a redirected file, or a CI
+build - the scope emits flat, ANSI-free lines instead of drawing a gutter, and
+progress is reported at most once per flat_step percent.
+
 # Final depth
 
 Once the tree completes, the live gutter collapses finished jobs to just the
@@ -550,12 +641,76 @@ macro progress(args...)
     end
 
     transformed = quote
-        $pbar_sym = Progbiotic.ProgBar($(opts[:title]); vanish_timeout = 0.5,
-                                       final_depth = $(opts[:final_depth]))
+        $pbar_sym = Progbiotic._root_progbar($(opts[:title]), $(opts[:final_depth]),
+                                            $(opts[:log_file]), $(opts[:io]))
         Progbiotic.with_tree_gutter($pbar_sym) do
             $block
         end
     end
 
     return esc(transformed)
+end
+
+"""
+    _root_progbar(title, final_depth, log_file, io) -> ProgBar
+
+Build the ProgBar that roots a @progress tree.  `io` and `log_file` are optional, so
+they are only forwarded when actually given; this keeps the generated code free of
+conditionals and lets the macro stay a pure AST transformation.
+"""
+_root_progbar(title, final_depth, log_file, io) =
+    io === nothing ?
+        ProgBar(title; vanish_timeout = 0.5, final_depth = final_depth, log_file = log_file) :
+        ProgBar(title; vanish_timeout = 0.5, final_depth = final_depth,
+                log_file = log_file, io = io)
+
+macro showtree(expr)
+    # TODO: colorize!
+    opts = Dict(
+        :fieldtypes => true,
+    )
+    sname = :foo
+    svals = Pair{Symbol, Symbol}[] 
+    structdef = postwalk(expr) do e
+        # n.b. will add more
+        if @capture(e, sym_Symbol = val_Bool)
+            if sym == :fieldtypes
+                opts[:fieldtypes] = val
+                return nothing
+            end
+        end
+        @capture(e, struct T_Symbol fields__ end) || return e
+        sname = T
+        for field in fields
+            if field isa Symbol
+                push!(svals, field => :Any)        
+                continue
+            end
+            @capture(field, f_Symbol :: t_Symbol) || continue
+            push!(svals, f => t)
+        end
+    end
+
+    @gensym name io
+    values = opts[:fieldtypes] ?
+        [:($(String((n[1]))) => $name.$(n[1]))
+            for n in svals] :
+        [:($((String((n[1]))) * " :: " * String(n[2])) => $name.$(n[1]))
+            for n in svals]
+    
+    dictexpr = :(Dict(
+       $(values...)      
+    ))
+
+    namestr = String(sname)
+    return quote
+        $expr
+        function Base.show(io::IO, $name :: $sname)
+            ns = $namestr
+            print_tree($dictexpr,
+                root = styled"┬  {bold,blue:$ns}",
+                io = io,
+            )
+        end
+    end |> esc
 end

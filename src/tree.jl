@@ -26,7 +26,8 @@ function print_tree(
     style::Symbol = :round,
     root = nothing,
     sort_keys::Bool = true,
-    io::IO = stdout
+    io::IO = stdout,
+    rootsym = false
 )
     syms = get(TREE_STRS, style) do
         error("Unknown style :$style. Available styles: $(collect(keys(TREE_STRS)))")
@@ -34,6 +35,7 @@ function print_tree(
 
     prefix = ""
     if root !== nothing
+        rootsym && print(io, TREE_STRS[:round][:root])
         println(io, root)
     end
 

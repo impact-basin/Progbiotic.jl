@@ -71,6 +71,12 @@ using Test
         @test sub_counter == 6
     end
 
+    include("iterator.jl")
+    include("columns.jl")
+    include("imperative.jl")
+    include("progress_logging.jl")
+    include("progresslogging_interop.jl")
+    include("test_logging.jl")
     include("threads.jl")
     include("macros.jl")
     include("progtree.jl")

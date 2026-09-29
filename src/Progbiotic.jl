@@ -2,7 +2,8 @@ module Progbiotic
 
 using Dates
 using Colors
-using MacroTools
+using MacroTools: @capture, postwalk
+import Logging   # stdlib: log interception for @progress scopes
 
 include("tree.jl")
 export print_tree
@@ -19,10 +20,37 @@ export HONEY, EMBER, TANGERINE, COPPER, MARIGOLD, SUNSET, AMBER_GLOW
 include("time.jl")
 export duration_str
 
+# --- The column renderer -----------------------------------------------------
+# types.jl holds the shared vocabulary (columns, log records, atomic state and the
+# render context); columns.jl the pluggable layout pieces; engine.jl the
+# background render task and the terminal controls.
+include("types.jl")
+export AbstractColumn
+export render_column
+export ProgressState
+export ProgressContext
+export progress_current, progress_total, progress_fraction, progress_rate
+export progress_eta, progress_elapsed, progress_runtime, progress_finished
+
+include("columns.jl")
+export SpinnerColumn, TextColumn, BarColumn, PercentageColumn
+export RateColumn, ETAColumn, PostfixColumn
+export default_layout
+
+include("engine.jl")
+export render_frame, render_block, render_flat_line
+
+# --- The tree renderer -------------------------------------------------------
 include("jobs.jl")
 export ProgJob
 export show_progjob_with_theme
 export with_job
+
+include("context.jl")
+export ProgressLogEntry
+export push_log!
+export prune_logs!
+export active_logs
 
 include("bars.jl")
 export ProgBar
@@ -31,9 +59,48 @@ export add_job!
 export get_children
 export render_progbar_tree
 export print_progbar_in_gutter
-export update!
 
-include("meta.jl")
+include("render.jl")
+export stop_gutter!
+
+include("logger.jl")
+export ProgbioticLogger
+export current_prog_context
+export current_progress_target
+export current_active_context
+export LogEntry
+export set_postfix!
+export with_progress_logging
+export enable_log_capture!
+export disable_log_capture!
+export log_capture_enabled
+
+# --- Ergonomic interfaces ----------------------------------------------------
+include("iterator.jl")
+export prog
+export ProgbioticIterator
+export progress_context
+
+include("imperative.jl")
+export Progress
+export next!
+export update!
+export finish!
+export withprogress
+
+include("macro.jl")
 export @progress
+export @showtree
+
+function __init__()
+    # Wrap the process-wide logger so bare prog/Progress loops intercept logs the
+    # same way @progress scopes do.  Transparent whenever no bar is running; see
+    # src/logger.jl.
+    try
+        __init_capture!()
+    catch
+    end
+    return nothing
+end
 
 end
