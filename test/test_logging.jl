@@ -84,10 +84,10 @@ log_node(; vanish = nothing, desc = "job", title = "") =
         @test [r[1] for r in sink3.records] == [Logging.Info]
     end
 
-    @testset "_with_log_capture installs the logger and the current bar" begin
+    @testset "a scoped capture installs the logger and the current bar" begin
         node = log_node()
         Logging.with_logger(Logging.NullLogger()) do
-            Progbiotic._with_log_capture(node, [:warn]) do
+            with_progress_logging(node; capture = [:warn]) do
                 @test current_bar() === node            # a bare set_postfix! would find it
                 @info "not captured"
                 @warn "captured"

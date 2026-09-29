@@ -487,18 +487,25 @@ function _with_scope(f::Function, bar::Progress)
 end
 
 """
-    _with_log_capture(f, bar, capture)
+    _install_bar!(bar) -> prior
 
-Run f with a ProgbioticLogger installed (through Logging.with_logger) and with the bar
-installed as the current task's innermost one, so log records emitted by f land in that
-bar's buffer and a bare set_postfix! attaches to it. Called by the code @progress generates
-for every level.
+Make bar the current task's innermost one, and hand back whatever was there so that
+_restore_bar! can put it back.
+
+A pair of calls rather than a do-block, because @progress has to install this inline: a
+body wrapped in a closure cannot return out of the function it was written in, so a return
+inside a progress scope would leave the scope instead of the function.
 """
-function _with_log_capture(f::Function, bar::Progress, capture)
-    logger = ProgbioticLogger(bar; capture = capture)
-    return Logging.with_logger(logger) do
-        _with_scope(f, bar)
-    end
+function _install_bar!(bar::Progress)
+    previous = get(task_local_storage(), _CURRENT_KEY, nothing)
+    task_local_storage(_CURRENT_KEY, bar)
+    return previous
+end
+
+"""Put back whatever _install_bar! displaced."""
+function _restore_bar!(prior)
+    task_local_storage(_CURRENT_KEY, prior)
+    return nothing
 end
 
 """

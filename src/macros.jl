@@ -167,6 +167,26 @@ GlobalRef needs no scope at all, so it does not care where it ends up.
 """
 _p(name::Symbol) = GlobalRef(@__MODULE__, name)
 
+# a Base.CoreLogging name: that is where the current logger actually lives
+_c(name::Symbol) = GlobalRef(Base.CoreLogging, name)
+
+"""
+    _scoped_logger(job_sym, capture, body) -> Expr
+
+The body of one level, run under a logger that captures into `job_sym`.
+
+Installed with Base.ScopedValues.@with rather than Logging.with_logger: @with is the
+closure-free form, so a return in the body returns from the caller's function rather than
+from a closure the macro slipped in. Its scopes stack, so nested levels shadow each other
+exactly as nested with_logger calls do.
+"""
+function _scoped_logger(job_sym, capture, body)
+    logstate = :($(_c(:LogState))($(_p(:ProgbioticLogger))($job_sym; capture = $capture)))
+    pair     = Expr(:call, :(=>), _c(:CURRENT_LOGSTATE), logstate)
+    return Expr(:macrocall, GlobalRef(Base.ScopedValues, Symbol("@with")), LineNumberNode(0),
+                pair, body)
+end
+
 # the level's theme: the package default is ours to name, a theme the caller gave is theirs
 _theme_expr(opts) = opts[:theme] === nothing ? _p(:AMBER) : opts[:theme]
 
@@ -327,20 +347,22 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     # the level's body runs with a logger that captures log records into this level's
     # node. Nested levels install their own logger, which shadows this one, so log calls
     # always resolve to the innermost active node.
-    capture = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
+    capture   = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
+    saved_bar = gensym("saved_bar")
     body = quote
         let $(bindings...)
             $sink_call
             $bind
             $rebind_ctx
-            try
-                $(_p(:_with_log_capture))($job_sym, $capture) do
-                    $body_expr
+            let $saved_bar = $(_p(:_install_bar!))($job_sym)
+                try
+                    $(_scoped_logger(job_sym, capture, body_expr))
+                finally
+                    $(_p(:_restore_bar!))($saved_bar)
+                    $restore_ctx
+                    $(_p(:_complete_statement_jobs!))($job_sym)
+                    $completion
                 end
-            finally
-                $restore_ctx
-                $(_p(:_complete_statement_jobs!))($job_sym)
-                $completion
             end
         end
     end
@@ -356,8 +378,12 @@ function _build_level_block(parent, job_sym, opts, body_expr;
         root = :($(_p(:_root_bar))($total, $(opts[:title]), $(opts[:final_depth]),
                                    $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
         quote
-            $(_p(:_with_root))($root) do $job_sym
+            $job_sym = $root
+            $(_p(:start_render!))($job_sym)
+            try
                 $body
+            finally
+                $(_p(:stop_render!))($job_sym)
             end
         end
     end
@@ -495,9 +521,13 @@ function _build_statement_block(parent, job_sym, opts)
     root = :($(_p(:_root_bar))(nothing, $(opts[:title]), $(opts[:final_depth]),
                                $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
     return quote
-        $(_p(:_with_root))($root) do $job_sym
+        $job_sym = $root
+        $(_p(:start_render!))($job_sym)
+        try
             $sink_call
             $bind
+        finally
+            $(_p(:stop_render!))($job_sym)
         end
     end
 end
@@ -696,6 +726,19 @@ and so on):
     @progress "foo" final_depth=1 for i in 1:10
         ...
     end
+
+# control flow
+
+The body runs inline, in the function you wrote it in. `break`, `continue` and
+`return` behave exactly as they would without the macro, so a scope can be exited
+early from inside a loop body:
+
+    function first_hit(items)
+        @progress "scanning" for item in items
+            ismatch(item) && return item
+        end
+        return nothing
+    end
 """
 macro progress(args...)
     isempty(args) && throw(ProgbioticError(
@@ -731,17 +774,3 @@ function _root_bar(total, title, final_depth, log_file, io;
                     log_file = log_file, io = io === nothing ? stdout : io)
 end
 
-"""
-    _with_root(f, bar::Progress)
-
-Start the render task for a freshly built root, run f(bar) with it, and hand the terminal
-back when f returns or throws. A @progress scope is exactly this call.
-"""
-function _with_root(f::Function, bar::Progress)
-    start_render!(bar)
-    try
-        return f(bar)
-    finally
-        stop_render!(bar)
-    end
-end

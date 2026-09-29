@@ -620,6 +620,59 @@ end
         @test all(Progbiotic._completed, children(root))
     end
 
+    @testset "a body is not wrapped in a closure" begin
+        # the capture scope is installed with Base.ScopedValues.@with rather than
+        # Logging.with_logger, which is what makes all three of these behave as they would
+        # without the macro. A return used to leave the scope instead of the function.
+        function returning()
+            seen = Int[]
+            @progress "x" total = 10 io = IOBuffer() for i in 1:10
+                push!(seen, i)
+                i == 4 && return (:returned, seen)
+            end
+            return (:fell_through, seen)
+        end
+        @test returning() == (:returned, [1, 2, 3, 4])
+
+        function returning_from_a_block()
+            @progress "x" io = IOBuffer() begin
+                return :from_the_block
+            end
+            return :fell_through
+        end
+        @test returning_from_a_block() == :from_the_block
+
+        function breaking()
+            seen = Int[]
+            @progress "x" total = 10 io = IOBuffer() for i in 1:10
+                i == 4 && break
+                push!(seen, i)
+            end
+            return seen
+        end
+        @test breaking() == [1, 2, 3]
+
+        function continuing()
+            seen = Int[]
+            @progress "x" total = 6 io = IOBuffer() for i in 1:6
+                i == 3 && continue
+                push!(seen, i)
+            end
+            return seen
+        end
+        @test continuing() == [1, 2, 4, 5, 6]
+
+        # and a scope that runs to the end still runs its whole body
+        function completing()
+            seen = Int[]
+            @progress "x" total = 3 io = IOBuffer() for i in 1:3
+                push!(seen, i)
+            end
+            return seen
+        end
+        @test completing() == [1, 2, 3]
+    end
+
     @testset "the macro does not need the module name in the caller's scope" begin
         # generated code used to name everything as Progbiotic.x, which the single esc
         # then sent looking in the caller. Anything but a full "using Progbiotic" failed.
