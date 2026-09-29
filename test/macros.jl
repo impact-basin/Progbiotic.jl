@@ -282,7 +282,7 @@ end
         @test root_ref4[].theme === OCEAN
 
         # the old threads=true option is gone: wrap loops with Threads.@threads
-        @test_throws ErrorException macroexpand(@__MODULE__, quote
+        @test_throws ProgbioticError macroexpand(@__MODULE__, quote
             @progress "Bad" threads=true for i in 1:2 end
         end)
 
@@ -294,10 +294,10 @@ end
         @test root_ref5[].opts.vanish === 1.0
 
         # an ambiguous v value is rejected at expansion time
-        @test_throws ErrorException macroexpand(@__MODULE__, quote
+        @test_throws ProgbioticError macroexpand(@__MODULE__, quote
             @progress "Bad" v=nothing for i in 1:2 end
         end)
-        @test_throws ErrorException macroexpand(@__MODULE__, quote
+        @test_throws ProgbioticError macroexpand(@__MODULE__, quote
             @progress "Bad" d=1.5 for i in 1:2 end
         end)
     end
@@ -565,6 +565,42 @@ end
         @test pbtotal(root) == 3
         @test pbdone(root) == 3            # 3/3 once the scope ends
         @test all(Progbiotic._completed, children(root))
+    end
+
+    @testset "the macro does not need the module name in the caller's scope" begin
+        # generated code used to name everything as Progbiotic.x, which the single esc
+        # then sent looking in the caller. Anything but a full "using Progbiotic" failed.
+        m = Module(:MacroOnlyImport)
+        Core.eval(m, Meta.parse("using Progbiotic: @progress"))
+        @test !isdefined(m, :Progbiotic)
+
+        forms = [
+            "@progress \"x\" total = 2 io = IOBuffer() for i in 1:2; i; end",
+            "@progress \"x\" io = IOBuffer() begin; 1; end",
+            "@progress \"x\" io = IOBuffer()",
+            "@progress \"x\" io = IOBuffer() Base.Threads.@threads for i in 1:2; i; end",
+            "@progress \"x\" io = IOBuffer() for i in 1:2; @progress \"y\" io = IOBuffer() for j in 1:2; j; end; end",
+        ]
+        for src in forms
+            @test (Core.eval(m, Meta.parse(src)); true)
+        end
+    end
+
+    @testset "the caller's locals are left alone" begin
+        # every temporary of ours is a gensym, so a caller is free to use any of our
+        # internal names, including the module's own
+        function scoped()
+            Progbiotic = "a local, not the module"
+            child      = "another local"
+            bar        = "and another"
+            acc = Int[]
+            @progress "x" total = 3 io = IOBuffer() for i in 1:3
+                push!(acc, i)
+            end
+            return (Progbiotic, child, bar, acc)
+        end
+        @test scoped() == ("a local, not the module", "another local", "and another",
+                           [1, 2, 3])
     end
 
     @testset "style overrides work at the root of a tree too" begin

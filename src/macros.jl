@@ -1,42 +1,59 @@
-function _is_macrocall_progress(e)
-    if e isa Expr && e.head == :macrocall
-        mname = e.args[1]
-        return mname == Symbol("@progress") ||
-               (mname isa Expr && mname.head == :. && mname.args[end] == QuoteNode(Symbol("@progress")))
-    end
-    return false
-end
+# both spellings, bare and qualified as Progbiotic.@progress
+_is_macrocall_progress(e) = @capture(e, @progress args__) || @capture(e, m_.@progress args__)
 
+"""
+    _extract_macrocall_args(e) -> Vector
+
+The arguments of a @progress macrocall, with its line markers dropped.
+"""
 function _extract_macrocall_args(e)
-    return filter(a -> !(a isa LineNumberNode), e.args[2:end])
+    args = @capture(e, @progress a__) ? a : (@capture(e, m_.@progress a__) ? a : Any[])
+    return Any[arg for arg in args if !(arg isa LineNumberNode)]
 end
 
+"""
+    _parse_progress_item(item, res)
+
+Read one argument of a @progress invocation into the option table: a string is the
+description, a bare name is a theme, `(ctx => ...)` binds a context, a tuple is those
+flattened, and `key = value` sets an option.
+"""
 function _parse_progress_item(item, res::Dict{Symbol, Any})
     if item isa String
         res[:desc] = item
-    elseif item isa Symbol
-        # Theme symbol (e.g. AMBER, GLACIER, NEON)
-        res[:theme] = item
-    elseif item isa Expr
-        if item.head == :call && item.args[1] == :(=>)
-            # pair binding: (pbar => args...)
-            res[:bind] = item.args[2]
-            _parse_progress_item(item.args[3], res)
-        elseif item.head == :tuple
-            for elem in item.args
-                _parse_progress_item(elem, res)
-            end
-        elseif item.head == :(=) || item.head == :kw
-            # keyword form (full name or short alias, e.g. `final_depth=1` or `d=1`)
-            key, val = item.args[1], item.args[2]
-            key, val = _canonical_progress_option(key, val)
-            res[key] = val
-        elseif item.head == :string # Interpolated string
-            res[:desc] = item
-        else
-            res[:theme] = item
-        end
+        return nothing
     end
+    if item isa Symbol
+        # a theme, named directly: @progress "x" OCEAN for ...
+        res[:theme] = item
+        return nothing
+    end
+    if @capture(item, ctx_ => inner_)
+        res[:bind] = ctx
+        return _parse_progress_item(inner, res)
+    end
+    if @capture(item, (parts__,))
+        foreach(part -> _parse_progress_item(part, res), parts)
+        return nothing
+    end
+    if @capture(item, key_ = value_)
+        key, value = _canonical_progress_option(key, value)
+        res[key] = value
+        return nothing
+    end
+    if item isa Expr && item.head === :kw
+        # the same thing written inside a call, where the parser says :kw rather than :(=)
+        key, value = _canonical_progress_option(item.args[1], item.args[2])
+        res[key] = value
+        return nothing
+    end
+    if item isa Expr && item.head === :string
+        res[:desc] = item          # an interpolated description
+        return nothing
+    end
+    # anything else is an expression naming a theme
+    res[:theme] = item
+    return nothing
 end
 
 """
@@ -48,7 +65,8 @@ passed through unchanged and resolved at runtime.
 function _coerce_final_depth(val)
     val isa Integer && return Int(val)
     if val isa Real
-        val == round(val) || error("@progress: `final_depth` must be an integer, got $(repr(val))")
+        val == round(val) || throw(ProgbioticError(
+            "@progress: `final_depth` must be an integer; got ", repr(val)))
         return Int(val)
     end
     return val
@@ -76,7 +94,10 @@ function _canonical_progress_option(key, val)
         elseif val isa Real
             return (:vanish_timeout, float(val))
         else
-            error("@progress: `v=$val` is ambiguous — use `vanish=<bool>` (e.g. `v=false` keeps bars on screen) or `vanish_timeout=<seconds>` (e.g. `v=1.2`)")
+            throw(ProgbioticError(
+                "@progress: `v=$val` is ambiguous; use `vanish=<bool>` (e.g. ",
+                "`v=false` keeps bars on screen) or `vanish_timeout=<seconds>` ",
+                "(e.g. `v=1.2`)"))
         end
     elseif key === :vanish_timeout && val isa Real
         # normalise e.g. `vanish_timeout=1` to Float64 for add_job!
@@ -93,7 +114,10 @@ function _canonical_progress_option(key, val)
     elseif key === :final_depth
         return (:final_depth, _coerce_final_depth(val))
     elseif key === :threads
-        error("@progress: the `threads=true` option was removed — wrap the loop with `Threads.@threads` instead, e.g. `@progress \"desc\" Base.Threads.@threads for i in 1:100 ... end`")
+        throw(ProgbioticError(
+            "@progress: the `threads=true` option was removed; wrap the loop with ",
+            "`Threads.@threads` instead, e.g. `@progress \"desc\" ",
+            "Base.Threads.@threads for i in 1:100 ... end`"))
     end
     return (key, val)
 end
@@ -102,7 +126,8 @@ function _parse_progress_args(args)
     res = Dict{Symbol, Any}(
         :bind           => nothing,
         :desc           => "",
-        :theme          => :(Progbiotic.AMBER),
+        :theme          => nothing,      # nothing is "the package default", which is ours
+                                         # to name and so is never escaped
         :title          => "",
         :vanish         => nothing,
         :vanish_timeout => nothing,
@@ -130,6 +155,21 @@ function _parse_progress_args(args)
     return res
 end
 
+"""
+    _p(name::Symbol)
+
+A reference to one of this module's own names, for use inside generated code.
+
+The expansion is escaped once, at the macro, so that every name the caller wrote resolves
+where the caller is. That would send our names looking there too -- which is why
+`@progress` used to fail in a module that imported the macro without the module name. A
+GlobalRef needs no scope at all, so it does not care where it ends up.
+"""
+_p(name::Symbol) = GlobalRef(@__MODULE__, name)
+
+# the level's theme: the package default is ours to name, a theme the caller gave is theirs
+_theme_expr(opts) = opts[:theme] === nothing ? _p(:AMBER) : opts[:theme]
+
 # the glyph and width keywords, forwarded to the node constructor when set.
 function _extract_extra_kws(opts)
     kws = Any[]
@@ -148,6 +188,24 @@ _vanish_kws(opts) = Any[Expr(:kw, :vanish, opts[:vanish]),
 _contains_for(e) =
     e isa Expr && (e.head == :for ||
                    (e.head == :macrocall && any(_contains_for, e.args[2:end])))
+
+"""
+    _loop_header(expr) -> Union{Nothing, Tuple}
+
+The `(var, iter, body)` of a `for` loop, or nothing when `expr` is not one. Both `=`
+and `in` are accepted. A header the macro cannot wrap -- several iteration clauses, or a
+destructured binding -- reports nothing rather than guessing.
+"""
+function _loop_header(expr)
+    (expr isa Expr && expr.head === :for) || return nothing
+    if @capture(expr, for var_ = iter_ body_ end)
+        return (var, iter, body)
+    end
+    if @capture(expr, for var_ in iter_ body_ end)
+        return (var, iter, body)
+    end
+    return nothing
+end
 
 """
     _unwrap_loop(expr) -> (for_expr, wrappers)
@@ -191,7 +249,10 @@ function _rewrap_loop(for_expr, wrappers)
     result = for_expr
     for w in reverse(wrappers)
         args = map(w.args) do a
-            a isa Expr && _contains_for(a) ? result : a
+            a isa LineNumberNode && return a
+            # the wrapper is the caller's macro, so everything in it other than the loop
+            # we generated is the caller's own code and is left exactly as written
+            _contains_for(a) ? result : a
         end
         result = Expr(:macrocall, args...)
     end
@@ -210,7 +271,7 @@ function _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
     loop = :(
         for $var in $iter_sym
             $new_body
-            Progbiotic.next!($job_sym)
+            $(_p(:next!))($job_sym)
         end
     )
     return _rewrap_loop(loop, wrappers)
@@ -239,29 +300,29 @@ function _build_level_block(parent, job_sym, opts, body_expr;
                             iter = nothing,
                             milestone_count::Int = 0,
                             thread_ctx::Union{Symbol, Nothing} = nothing)
-    total = is_loop ? :(Progbiotic.infer_total($iter_sym)) : max(1, milestone_count)
+    total = is_loop ? :($(_p(:infer_total))($iter_sym)) : max(1, milestone_count)
     kind  = is_loop || milestone_count == 0 ? :bar : :container
 
     node_kws = Any[Expr(:kw, :desc, opts[:desc]),
-                   Expr(:kw, :theme, opts[:theme]),
+                   Expr(:kw, :theme, _theme_expr(opts)),
                    Expr(:kw, :kind, QuoteNode(kind)),
                    _vanish_kws(opts)...,
                    _extract_extra_kws(opts)...]
 
     saved_ctx = gensym("saved_ctx")
     bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
-    rebind_ctx = thread_ctx === nothing ? :() : :($thread_ctx = $job_sym)
-    restore_ctx = thread_ctx === nothing ? :() : :($thread_ctx = $saved_ctx)
+    rebind_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $job_sym)
+    restore_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $saved_ctx)
     # a log_file given at this level attaches (or re-attaches) the tree's sink: a sink
     # belongs to the whole scope, so it is the root's however deep the level that asked
     sink_call = opts[:log_file] === nothing ? :() :
-        :(Progbiotic._ensure_log_sink!($job_sym, $(opts[:log_file])))
+        :($(_p(:_ensure_log_sink!))($job_sym, $(opts[:log_file])))
 
-    bindings = Any[:($saved_ctx = $(thread_ctx === nothing ? nothing : thread_ctx))]
+    bindings = Any[:($saved_ctx = $(thread_ctx))]
 
-    completion = :(if Progbiotic.pbtotal($job_sym) !== nothing &&
-                      Progbiotic.pbdone($job_sym) < Progbiotic.pbtotal($job_sym)
-                       Progbiotic.update!($job_sym, Progbiotic.pbtotal($job_sym))
+    completion = :(if $(_p(:pbtotal))($job_sym) !== nothing &&
+                      $(_p(:pbdone))($job_sym) < $(_p(:pbtotal))($job_sym)
+                       $(_p(:update!))($job_sym, $(_p(:pbtotal))($job_sym))
                    end)
 
     # the level's body runs with a logger that captures log records into this level's
@@ -274,12 +335,12 @@ function _build_level_block(parent, job_sym, opts, body_expr;
             $bind
             $rebind_ctx
             try
-                Progbiotic._with_log_capture($job_sym, $capture) do
+                $(_p(:_with_log_capture))($job_sym, $capture) do
                     $body_expr
                 end
             finally
                 $restore_ctx
-                Progbiotic._complete_statement_jobs!($job_sym)
+                $(_p(:_complete_statement_jobs!))($job_sym)
                 $completion
             end
         end
@@ -287,16 +348,16 @@ function _build_level_block(parent, job_sym, opts, body_expr;
 
     block = if parent !== nothing
         quote
-            $job_sym = Progbiotic.child($parent, $total; $(node_kws...))
+            $job_sym = $(_p(:child))($parent, $total; $(node_kws...))
             $body
         end
     else
         # the outermost level *is* the tree, so building its node starts the render task
         # and running the body under it hands the terminal back when the scope ends
-        root = :(Progbiotic._root_bar($total, $(opts[:title]), $(opts[:final_depth]),
-                                      $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
+        root = :($(_p(:_root_bar))($total, $(opts[:title]), $(opts[:final_depth]),
+                                   $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
         quote
-            Progbiotic._with_root($root) do $job_sym
+            $(_p(:_with_root))($root) do $job_sym
                 $body
             end
         end
@@ -347,9 +408,9 @@ function _build_progress_level(m_args, parent,
     cfg_args  = m_args[1:end-1]
 
     for_expr, wrappers = _unwrap_loop(body_expr)
-    is_block = body_expr isa Expr && body_expr.head == :block
-    is_loop = for_expr !== nothing &&
-        (@capture(for_expr, for var_ = iter_ body_ end) || @capture(for_expr, for var_ in iter_ body_ end))
+    header   = _loop_header(for_expr)
+    is_loop  = header !== nothing
+    is_block = body_expr isa Expr && body_expr.head === :block
     # a bare `@progress "desc"` statement has no loop/block body: all args are config.
     opts = _parse_progress_args(is_loop || is_block ? cfg_args : m_args)
 
@@ -388,9 +449,10 @@ function _build_progress_level(m_args, parent,
     end
 
     block = if is_loop
+        var, iter, loop_body = header
         job_sym   = gensym("child_job")
         iter_sym  = gensym("child_iter")
-        new_body  = _transform_progress_ast(body, job_sym, opts, carried)
+        new_body  = _transform_progress_ast(loop_body, job_sym, opts, carried)
         loop_expr = _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
         _build_level_block(level_parent, job_sym, opts, loop_expr;
                            is_loop = true, iter_sym = iter_sym, iter = iter,
@@ -412,9 +474,9 @@ function _build_progress_level(m_args, parent,
 
     if opts[:with] !== nothing
         # evaluate the context once, check it, and run the level's code against it.
-        guard = :($ctxv isa Progbiotic.Progress ||
-                  throw(Progbiotic.ProgbioticError(
-                      "@progress: `with=` expects a bar, e.g. one bound by the caller's ", 
+        guard = :($ctxv isa $(_p(:Progress)) ||
+                  throw($(_p(:ProgbioticError))(
+                      "@progress: `with=` expects a bar, e.g. one bound by the caller's ",
                       "@progress; got ", repr($ctxv))))
         block = quote
             let $ctxv = $(opts[:with])
@@ -436,28 +498,28 @@ finished bar otherwise.
 """
 function _build_statement_block(parent, job_sym, opts)
     node_kws = Any[Expr(:kw, :desc, opts[:desc]),
-                   Expr(:kw, :theme, opts[:theme]),
+                   Expr(:kw, :theme, _theme_expr(opts)),
                    Expr(:kw, :kind, QuoteNode(:milestone)),
                    _vanish_kws(opts)...,
                    _extract_extra_kws(opts)...]
 
     bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
     sink_call = opts[:log_file] === nothing ? :() :
-        :(Progbiotic._ensure_log_sink!($job_sym, $(opts[:log_file])))
+        :($(_p(:_ensure_log_sink!))($job_sym, $(opts[:log_file])))
 
     if parent !== nothing
         return quote
-            $job_sym = Progbiotic.child($parent, nothing; $(node_kws...))
+            $job_sym = $(_p(:child))($parent, nothing; $(node_kws...))
             $sink_call
             $bind
         end
     end
 
     # a bare `@progress "desc"` with no enclosing scope is a tree of one milestone
-    root = :(Progbiotic._root_bar(nothing, $(opts[:title]), $(opts[:final_depth]),
-                                  $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
+    root = :($(_p(:_root_bar))(nothing, $(opts[:title]), $(opts[:final_depth]),
+                               $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
     return quote
-        Progbiotic._with_root($root) do $job_sym
+        $(_p(:_with_root))($root) do $job_sym
             $sink_call
             $bind
         end
@@ -476,11 +538,13 @@ function _transform_progress_ast(expr, parent, parent_opts::Dict{Symbol, Any},
         isempty(m_args) && return expr
         block, _ = _build_progress_level(m_args, parent, parent_opts, thread_ctx)
         return block
-    elseif expr isa Expr
-        return Expr(expr.head, map(arg -> _transform_progress_ast(arg, parent, parent_opts, thread_ctx), expr.args)...)
-    else
-        return expr
     end
+    if expr isa Expr
+        return Expr(expr.head,
+                    map(arg -> _transform_progress_ast(arg, parent, parent_opts, thread_ctx),
+                        expr.args)...)
+    end
+    return expr
 end
 
 """
@@ -658,8 +722,12 @@ and so on):
     end
 """
 macro progress(args...)
-    isempty(args) && error("@progress requires a loop, a block, or a description")
+    isempty(args) && throw(ProgbioticError(
+        "@progress requires a loop, a block, or a description"))
 
+    # one esc over the whole output, which is what resolves the caller's own expressions
+    # where the caller is. Everything of ours inside it is a GlobalRef (see _p), so no name
+    # of ours is looked up in the caller's scope, and our locals are all gensyms.
     block, _ = _build_progress_level(args, nothing, nothing, nothing)
     return esc(block)
 end
