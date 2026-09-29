@@ -134,6 +134,18 @@ end
         @test counter.frames[] >= 2
     end
 
+    @testset "a flat line carries no escapes and one postfix" begin
+        bar = Progress(10; desc = "flat", io = IOBuffer(), tty = false, vanish = 0.0,
+                       start = false)
+        next!(bar, 3)
+        set_postfix!(bar; loss = 0.041)
+
+        line = render_flat_line(bar)
+        @test !occursin('\e', line)
+        @test startswith(line, "[INFO] flat 30% (3/10)")
+        @test length(findall("[loss=0.041]", line)) == 1
+    end
+
     @testset "the gutter is drawn, then erased or left behind" begin
         buffer = IOBuffer()
         bar = Progress(10; desc = "tty", io = buffer, tty = true, fps = 100.0, vanish = 0.0)

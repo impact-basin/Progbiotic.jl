@@ -260,7 +260,9 @@ function render_tree(node::Progress; collapse::Bool = true, width::Int = 0,
         println(io, _clip(line, width))
         _render_logs(io, row.node, flush_root ? "" : row.gutter, symbols, now_sec, width)
     end
-    return String(take!(io))
+    # the rows are newline-joined, not newline-terminated: the gutter splits this on
+    # newlines to count the height of the block it is about to claim
+    return chomp(String(take!(io)))
 end
 
 """
@@ -304,8 +306,9 @@ function flat_percentage(node::Progress)
 end
 
 # the columns a flat line already accounts for: a spinner and a bar carry nothing in a
-# file, and the label, percentage and count are all in the head already.
-const _FLAT_SKIP = (Spinner, Tag, Bar, Percent, Count)
+# file, the label, percentage and count are in the head, and Postfix is appended below
+# in its own brackets. Rendering one of these as an extra would print it twice.
+const _FLAT_SKIP = (Spinner, Tag, Bar, Percent, Count, Postfix)
 
 """
     render_flat_line(node, depth = 0) -> String

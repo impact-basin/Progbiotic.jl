@@ -122,6 +122,24 @@ using Test
         @test_throws ProgbioticError Progbiotic._resolve_vanish("soon")
     end
 
+    @testset "render_tree is newline-joined, not newline-terminated" begin
+        root = Progbiotic.Progress(nothing; desc = "root", io = IOBuffer(), tty = false,
+                                   vanish = nothing, start = false)
+        child(root, 3; desc = "kid")
+
+        text = render_tree(root)
+        @test !endswith(text, "\n")
+        @test length(split(text, '\n')) == 2
+
+        # nothing visible is an empty string, not a blank line. The tick that first
+        # notices a node has finished still draws it; the one after it does not.
+        gone = Progbiotic.Progress(1; desc = "gone", io = IOBuffer(), tty = false,
+                                   vanish = 0.0, start = false)
+        next!(gone)
+        @test !isempty(render_tree(gone))
+        @test render_tree(gone) == ""
+    end
+
     @testset "show names the bar and its shape" begin
         root = Progbiotic.Progress(10; desc = "handle", io = IOBuffer(), tty = false,
                                    vanish = 0.0, start = false)
