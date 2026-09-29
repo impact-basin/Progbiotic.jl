@@ -33,17 +33,17 @@ end
     sleep(0.1)
 end
 
-# themeable!
+# themeable! a theme is a way of building a layout, and a layout is what you pass
 files = ["data1.csv", "data2.csv", "data3.csv", "data4.csv"]
-for file in prog(files; theme = OCEAN, desc = "Parsing files")
+for file in prog(files; layout = theme_layout(OCEAN), desc = "Parsing files")
     sleep(0.3)
 end
 
 # works with comprehensions!
-[x^2 for x in prog(1:9001; theme = GLACIER, desc = "Squaring")];
+[x^2 for x in prog(1:9001; layout = theme_layout(GLACIER), desc = "Squaring")];
 
 # comprehensions over matrices!
-[x^2 for x in prog(rand(32,32); theme = GLACIER, desc = "Squaring matrix elements!")]
+[x^2 for x in prog(rand(32,32); layout = theme_layout(GLACIER), desc = "Squaring matrix elements!")]
 ```
 
 ## Iterator interface (no macro required)
