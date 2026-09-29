@@ -1,11 +1,13 @@
 module Progbiotic
 
-using Colors
+using ColorTypes: Colorant, RGB, N0f8, red, green, blue
 using MacroTools: @capture
 import Logging   # stdlib: log interception for @progress scopes
 
 include("errors.jl")
 export ProgbioticError
+
+include("color.jl")
 
 include("bar.jl")
 export BarState

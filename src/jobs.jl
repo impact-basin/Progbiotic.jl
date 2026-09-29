@@ -191,22 +191,14 @@ function _postfix_suffix(metrics::AbstractDict)
     return string(" [", join((string(k, "=", v) for (k, v) in metrics), ", "), "]")
 end
 
-function _ansi_fg(c::Color)
-    rgb = RGB(c)
-    r = round(Int, Colors.red(rgb) * 255)
-    g = round(Int, Colors.green(rgb) * 255)
-    b = round(Int, Colors.blue(rgb) * 255)
-    return "\e[38;2;$(r);$(g);$(b)m"
-end
-
 const _ANSI_RESET = "\e[0m"
 const _ANSI_DIM   = "\e[2m"
 const _ANSI_BOLD  = "\e[1m"
 
 """Interpolates a color at fractional position t ∈ [0, 1] across the theme palette."""
-function _palette_gradient(palette::Vector{Color}, t::Float64)
+function _palette_gradient(palette::AbstractVector{<:Colorant}, t::Float64)
     isempty(palette) && return ""
-    length(palette) == 1 && return _ansi_fg(palette[1])
+    length(palette) == 1 && return ansi_fg(palette[1])
 
     # Position along the palette segments
     scaled = clamp(t, 0.0, 1.0) * (length(palette) - 1)
@@ -214,7 +206,7 @@ function _palette_gradient(palette::Vector{Color}, t::Float64)
     frac = scaled - floor(scaled)
 
     if idx >= length(palette)
-        return _ansi_fg(palette[end])
+        return ansi_fg(palette[end])
     end
 
     # Linear interpolation between adjacent palette colors in RGB
@@ -224,7 +216,7 @@ function _palette_gradient(palette::Vector{Color}, t::Float64)
         green(c1) + frac * (green(c2) - green(c1)),
         blue(c1)  + frac * (blue(c2)  - blue(c1))
     )
-    return _ansi_fg(interp_c)
+    return ansi_fg(interp_c)
 end
 
 """
@@ -244,7 +236,7 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
     rem_subunits = rem(total_subunits, k)
 
     fg_color = isempty(t.palette) ? "" : _palette_gradient(t.palette, prog)
-    dim_color = isempty(t.palette) ? _ANSI_DIM : _ansi_fg(t.palette[begin])
+    dim_color = isempty(t.palette) ? _ANSI_DIM : ansi_fg(t.palette[begin])
 
     # Filled portion; a `head` glyph replaces the tip of an in-progress bar
     head = t.head
@@ -306,7 +298,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
 
     # 1. [Blinker / Spinner] - Cycles through spinner glyphs and palette colors
     spinner_char = isempty(t.spinner) ? '◉' : t.spinner[mod(floor(Int, now_sec * 8), length(t.spinner)) + 1]
-    spinner_color = isempty(t.palette) ? "" : _ansi_fg(t.palette[mod(floor(Int, now_sec * 4), length(t.palette)) + 1])
+    spinner_color = isempty(t.palette) ? "" : ansi_fg(t.palette[mod(floor(Int, now_sec * 4), length(t.palette)) + 1])
     blinker_str = string(spinner_color, spinner_char, _ANSI_RESET)
 
     # 2. [Desc] - fixed-width so the bar column lines up across rows
