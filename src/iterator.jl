@@ -17,7 +17,8 @@ Construct one with the prog function rather than directly.
 
 Besides the iteration protocol it forwards the collection's shape traits (IteratorSize,
 IteratorEltype, eltype, length, size), so comprehensions, collect, and Threads.@threads
-over a wrapped collection all behave exactly as they do over the collection itself.
+over a wrapped collection all behave exactly as they do over the collection itself. The
+bar it drives is `it.bar`.
 """
 struct ProgbioticIterator{I, B<:Progress}
     iter :: I
@@ -119,7 +120,7 @@ loop ends. This is the form to use when the body logs:
 """
 function prog(f::Function, iter; kwargs...)
     wrapped = prog(iter; kwargs...)
-    with_progress_logging(wrapped.bar) do
+    _with_progress_logging(wrapped.bar) do
         for item in wrapped
             f(item)
         end
@@ -192,11 +193,6 @@ set_postfix!(it::ProgbioticIterator; kwargs...) = set_postfix!(it.bar; kwargs...
 
 """Finish a wrapped collection's bar early (for example after breaking out)."""
 finish!(it::ProgbioticIterator; wait::Bool = !it.bar.opts.tty) = finish!(it.bar; wait = wait)
-
-# a wrapped collection is a view onto a bar, so it can be handed to the scoped forms
-# directly: with_progress_logging(prog(1:10)) do ... end
-with_progress_logging(f::Function, it::ProgbioticIterator; capture = true) =
-    _with_progress_logging(f, it.bar; capture = capture)
 
 function Base.show(io::IO, it::ProgbioticIterator)
     state = it.bar.state

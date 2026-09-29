@@ -231,12 +231,11 @@ The same option is accepted by `prog` and `Progress`. `log_file` may be a path
 ## Capturing logs outside the macro
 
 A `@progress` scope installs its own logger, so it intercepts `@info`, `@warn`
-and friends automatically. So do the explicit scopes: the do-block forms of `prog`
-and `Progress`, and `with_progress_logging`:
+and friends automatically. The do-block forms of `prog` and `Progress` are scopes
+too, so a loop you drive yourself has somewhere for its records to land:
 
 ```julia
-p = Progress(100)
-with_progress_logging(p) do
+Progress(100; desc = "Training") do p
     for i in 1:100
         next!(p)
         i == 50 && @info "halfway"

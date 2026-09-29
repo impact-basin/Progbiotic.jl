@@ -110,12 +110,12 @@ using Test
         finish!(wrapped)
     end
 
-    @testset "a wrapped collection is a scope handle too" begin
+    @testset "a wrapped collection's bar is the capture target" begin
         buffer = sink()
         # a record inherits the bar's vanish timeout, so an entry only survives to be
         # read back if the bar itself lingers
         it = prog(1:4; desc = "scoped", io = buffer, vanish = 30.0)
-        with_progress_logging(it) do
+        Progbiotic._with_progress_logging(it.bar) do
             for _ in it
                 @info "inside"
             end

@@ -87,7 +87,7 @@ log_node(; vanish = nothing, desc = "job", title = "") =
     @testset "a scoped capture installs the logger and the current bar" begin
         node = log_node()
         Logging.with_logger(Logging.NullLogger()) do
-            with_progress_logging(node; capture = [:warn]) do
+            Progbiotic._with_progress_logging(node; capture = [:warn]) do
                 @test current_bar() === node            # a bare set_postfix! would find it
                 @info "not captured"
                 @warn "captured"

@@ -192,7 +192,7 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
         # inside a scope it reaches that scope's bar
         live = Progress(10; desc = "live", io = IOBuffer(), tty = false, vanish = 0.0)
-        with_progress_logging(live) do
+        Progbiotic._with_progress_logging(live) do
             set_postfix!(; epoch = 3)
         end
         @test occursin("epoch=3", render_column(Postfix(), live.state))

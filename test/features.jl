@@ -91,7 +91,7 @@ using Test
         p = Progress(10_000; desc = "Parallel Processing", vanish = 1.0,
                      io = IOBuffer(), tty = false, start = false)
 
-        with_progress_logging(p) do
+        Progbiotic._with_progress_logging(p) do
             Threads.@threads for i in 1:10_000
                 # one atomic add, with no lock contention and no lost update
                 next!(p)

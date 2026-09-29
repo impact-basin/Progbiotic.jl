@@ -521,21 +521,6 @@ function _with_progress_logging(f::Function, bar::Progress; capture = true)
     end
 end
 
-"""
-    with_progress_logging(f, bar; capture = true)
-
-Run f with log records captured into bar and with a bare set_postfix!() resolving to it:
-
-    p = Progress(100)
-    with_progress_logging(p) do
-        for i in 1:100
-            next!(p)
-            i == 50 && @info "halfway"
-        end
-    end
-"""
-with_progress_logging(f::Function, bar::Progress; capture = true) =
-    _with_progress_logging(f, bar; capture = capture)
 
 # ---------------------------------------------------------------------------
 # set_postfix!

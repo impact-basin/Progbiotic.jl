@@ -52,7 +52,6 @@ export current_bar
 export LogEntry
 export set_postfix!
 export push_log!, prune_logs!, active_logs
-export with_progress_logging
 
 # --- the front-ends ----------------------------------------------------------
 include("imperative.jl")

@@ -149,7 +149,7 @@ end
     @testset "log capture scopes" begin
         bar = Progress(10; desc = "scope", io = IOBuffer(), tty = true, vanish = 30.0,
                        start = false)
-        with_progress_logging(bar) do
+        Progbiotic._with_progress_logging(bar) do
             @info "captured inside the scope"
             set_postfix!(; loss = 0.5)
         end
@@ -165,7 +165,7 @@ end
     @testset "capture filtering and pass-through" begin
         bar = Progress(10; desc = "filtered", io = IOBuffer(), tty = true, vanish = 30.0,
                        start = false)
-        with_progress_logging(bar; capture = [:warn, :error]) do
+        Progbiotic._with_progress_logging(bar; capture = [:warn, :error]) do
             @info "goes to the ordinary logger"
             @warn "captured"
         end
@@ -175,7 +175,7 @@ end
 
         silent = Progress(10; desc = "off", io = IOBuffer(), tty = true, vanish = 30.0,
                           start = false)
-        with_progress_logging(silent; capture = false) do
+        Progbiotic._with_progress_logging(silent; capture = false) do
             @info "not captured"
         end
         @test isempty(active_logs(silent))
@@ -184,7 +184,7 @@ end
     @testset "thread-safe capture" begin
         bar = Progress(1000; desc = "threaded logs", io = IOBuffer(), tty = true,
                        vanish = 300.0, start = false)
-        with_progress_logging(bar) do
+        Progbiotic._with_progress_logging(bar) do
             Base.Threads.@threads for i in 1:200
                 @info "threaded " * string(i)
             end
@@ -207,7 +207,7 @@ end
         # an explicit scope is what captures
         scoped = Progress(10; desc = "scoped", io = IOBuffer(), tty = false, vanish = 60.0,
                           start = false)
-        with_progress_logging(scoped) do
+        Progbiotic._with_progress_logging(scoped) do
             @info "captured by the scope"
             @warn "also captured"
         end
@@ -231,7 +231,7 @@ end
         # wrap the same loop in an explicit scope and it is captured
         scoped = prog(1:4; desc = "scoped iterator", io = IOBuffer(), tty = false,
                       vanish = 60.0)
-        with_progress_logging(scoped.bar) do
+        Progbiotic._with_progress_logging(scoped.bar) do
             for x in scoped
                 x == 2 && @info "captured from the loop body"
             end
