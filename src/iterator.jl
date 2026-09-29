@@ -1,10 +1,10 @@
-# The zero-boilerplate iterator interface.
+# the zero-boilerplate iterator interface.
 #
 #     for record in prog(1:1000; desc = "Parsing Records")
 #         ...
 #     end
 #
-# No macro, no boilerplate, no manual handle: wrapping a collection infers its
+# no macro, no boilerplate, no manual handle: wrapping a collection infers its
 # length, installs a background renderer, and advances the bar once per item.  When
 # the length cannot be known - an unbounded channel, an iterator that reports
 # SizeUnknown - the bar falls back to an indeterminate spinner, which is the honest
@@ -71,7 +71,7 @@ collections get a determinate bar with a percentage, a rate and an ETA, while
 infinite or size-unknown ones get an indeterminate spinner.  Pass total = n to
 override the inference, or total = nothing to force indeterminate mode.
 
-# Keyword arguments
+# keyword arguments
 
 - desc:       the bar's description.
 - vanish:     seconds the finished bar (and its log lines) stays on screen.
@@ -135,10 +135,10 @@ function prog(f::Function, iter; kwargs...)
 end
 
 # ---------------------------------------------------------------------------
-# Iteration protocol
+# iteration protocol
 # ---------------------------------------------------------------------------
 
-# Each step advances the atomic counter *before* handing the item to the loop body,
+# each step advances the atomic counter *before* handing the item to the loop body,
 # so the count always means "items produced so far" and no work is needed after the
 # body returns.  When the underlying iterator is exhausted the bar is finished,
 # which is what triggers the final frame and, on a terminal, the vanish timer.
@@ -162,7 +162,7 @@ function _finish_iteration!(it::ProgbioticIterator)
 end
 
 # ---------------------------------------------------------------------------
-# Transparent collection traits
+# transparent collection traits
 # ---------------------------------------------------------------------------
 
 Base.IteratorSize(::Type{ProgbioticIterator{I}}) where {I} = Base.IteratorSize(I)
@@ -191,7 +191,7 @@ function Base.getindex(it::ProgbioticIterator, index...)
 end
 
 # ---------------------------------------------------------------------------
-# Handles
+# handles
 # ---------------------------------------------------------------------------
 
 """Attach dynamic metrics to a wrapped collection's bar."""

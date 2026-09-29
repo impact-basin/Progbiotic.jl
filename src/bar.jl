@@ -1,4 +1,4 @@
-# The state of one bar, and the readers over it.
+# the state of one bar, and the readers over it.
 
 """
     BarState(total = nothing; desc = "")
@@ -172,7 +172,7 @@ function _set_description!(s::BarState, name::AbstractString)
 end
 
 # ---------------------------------------------------------------------------
-# Render options, log buffer, and the shared state of a tree
+# render options, log buffer, and the shared state of a tree
 # ---------------------------------------------------------------------------
 
 """

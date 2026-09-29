@@ -12,9 +12,9 @@ function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = fal
     elseif isinf(seconds)
         return seconds > 0 ? "∞" : "-∞"
     end
-    # No branch for negative seconds: durations are never negative (callers
+    # no branch for negative seconds: durations are never negative (callers
     # clamp elapsed/ETA values to >= 0 before formatting).
-    # Handle sub-second intervals if requested
+    # handle sub-second intervals if requested
     if show_ms && seconds < 1.0
         if seconds < 1e-3
             val = round(seconds * 1e6, digits = 1)
@@ -45,7 +45,7 @@ function duration_str(seconds::Number; compact::Bool = true, show_ms::Bool = fal
         push!(parts, compact ? "$(mins)m" : "$(mins) minute" * (mins == 1 ? "" : "s"))
     end
 
-    # Include milliseconds if under an hour and show_ms is true
+    # include milliseconds if under an hour and show_ms is true
     if show_ms && ms > 0 && days == 0 && hours == 0
         sec_val = secs + ms / 1000.0
         push!(parts, compact ? "$(round(sec_val,digits = 2))s" : "$(round(sec_val, digits=2)) seconds")

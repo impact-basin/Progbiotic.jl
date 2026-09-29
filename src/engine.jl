@@ -1,13 +1,13 @@
-# The render engine: TTY detection, the background render task, the frame-rate
+# the render engine: TTY detection, the background render task, the frame-rate
 # limiter and the ANSI terminal controls.
 #
-# The contract this file exists to uphold is simple: *the computational loop never
+# the contract this file exists to uphold is simple: *the computational loop never
 # touches the terminal*.  Advancing a bar is an atomic add; drawing happens on a
 # separate Task that wakes at most fps times a second, reads the atomics, and writes
 # one buffer under a lock.  A for loop over 10^7 items therefore pays for a handful
 # of atomic adds per item and nothing else.
 #
-# Two output modes share that machinery:
+# two output modes share that machinery:
 #
 #   * interactive (a terminal): a live bar redrawn in place with ANSI cursor
 #     control, with transient log lines drawn underneath and erased when they
@@ -30,7 +30,7 @@ _cursor_down(n::Int) = n > 0 ? string(_CSI, n, "B") : ""
 """Erase from the cursor to the end of the line."""
 const _ERASE_LINE = "\e[K"
 
-# Colours for intercepted log lines, by level.
+# colours for intercepted log lines, by level.
 const _LOG_LEVEL_COLORS = Dict{Logging.LogLevel, String}(
     Logging.Debug => "\e[34m",   # blue
     Logging.Info  => "\e[36m",   # cyan
@@ -77,7 +77,7 @@ function format_log_line(entry::LogEntry)
 end
 
 # ---------------------------------------------------------------------------
-# Frames
+# frames
 # ---------------------------------------------------------------------------
 
 """
@@ -138,7 +138,7 @@ function render_flat_line(ctx::ProgressContext)
 
     extras = String[]
     for column in ctx.layout
-        # The description and the percentage are already in the head, and a spinner
+        # the description and the percentage are already in the head, and a spinner
         # or a bar would only add noise.
         (column isa Tag || column isa Spinner ||
          column isa Bar || column isa Percent) && continue
@@ -166,7 +166,7 @@ function flat_percentage(ctx::ProgressContext)
 end
 
 # ---------------------------------------------------------------------------
-# Drawing
+# drawing
 # ---------------------------------------------------------------------------
 
 """
@@ -192,7 +192,7 @@ function _draw_tty!(ctx::ProgressContext)
     for line in lines
         print(buffer, _ERASE_LINE, line, "\n")
     end
-    # Erase rows left over from a taller previous frame.
+    # erase rows left over from a taller previous frame.
     extra = previous - length(lines)
     for _ in 1:max(0, extra)
         print(buffer, _ERASE_LINE, "\n")
@@ -247,7 +247,7 @@ a CI log.
 function _draw_flat!(ctx::ProgressContext; force::Bool = false)
     now_sec = time()
     wrote = false
-    # The decision and the write share one lock: with a threaded renderer, the
+    # the decision and the write share one lock: with a threaded renderer, the
     # task and a finalising finish!() could otherwise both decide to emit.
     @lock ctx.write_lock begin
         buffer = IOBuffer()
@@ -270,7 +270,7 @@ function _draw_flat!(ctx::ProgressContext; force::Bool = false)
     return wrote
 end
 
-# Flat-mode throttling.  Indeterminate bars have no percentage to step through, so
+# flat-mode throttling.  Indeterminate bars have no percentage to step through, so
 # they emit a heartbeat once a second instead.
 function _should_emit_flat(ctx::ProgressContext, percentage::Int, force::Bool)
     force && return ctx.last_flat_pct < 100
@@ -307,7 +307,7 @@ function render_tick!(ctx::ProgressContext; force::Bool = false)
 end
 
 # ---------------------------------------------------------------------------
-# The background render task
+# the background render task
 # ---------------------------------------------------------------------------
 
 """
@@ -351,7 +351,7 @@ function _render_loop(ctx::ProgressContext)
                 render_tick!(ctx)
             end
             if ctx.finished[]
-                # Flat output is append-only: there is nothing to linger for.
+                # flat output is append-only: there is nothing to linger for.
                 ctx.tty || break
                 # vanish = Inf means keep the finished bar on screen forever.
                 isinf(ctx.vanish) && break
@@ -360,7 +360,7 @@ function _render_loop(ctx::ProgressContext)
             sleep(ctx.dt)
         end
     catch err
-        # Rendering must never take the user's computation down with it, and it must
+        # rendering must never take the user's computation down with it, and it must
         # not log through the user's logger (which may be capturing into this very
         # context), so failures go straight to stderr.
         try
@@ -434,11 +434,11 @@ function finish!(ctx::ProgressContext; wait::Bool = !ctx.tty)
 
     task = ctx.task
     if task === nothing
-        # Nothing is rendering this bar, so the final frame has to be drawn here.
+        # nothing is rendering this bar, so the final frame has to be drawn here.
         ctx.tty ? _draw_tty!(ctx) : _draw_flat!(ctx; force = true)
         _close_log_sink!(ctx)
     elseif wait
-        # The render task owns the terminal.  It draws the final frame, honours the
+        # the render task owns the terminal.  It draws the final frame, honours the
         # vanish timeout and erases the block, all in one place, so finish! and the
         # task can never both draw - or erase - the same block.
         _wait_quietly(task)

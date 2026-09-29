@@ -4,7 +4,7 @@
 Mutable container for a tree of [`ProgJob`](@ref)s, rendered as a live gutter at
 the bottom of the terminal.
 
-# Keyword arguments
+# keyword arguments
 - `vanish_timeout`: default time (seconds) a completed child bar stays on screen
   before disappearing; `nothing` (the default) keeps completed bars forever.
 - `final_depth`: how many levels of children remain visible once a job completes
@@ -114,11 +114,11 @@ function add_job!(pbar::ProgBar, iter_or_desc;
                   vanish_timeout::Union{Float64, Nothing} = nothing,
                   dt::Float64 = pbar.dt,
                   io::IO = pbar.io)
-    # Default child theme to parent theme if not explicitly changed
+    # default child theme to parent theme if not explicitly changed
     actual_theme = (theme === AMBER && parent !== nothing) ? parent.theme : theme
     actual_theme = _apply_style(actual_theme, spinner, barunits, empty, caps, head)
 
-    # Resolve the vanish timeout for this job:
+    # resolve the vanish timeout for this job:
     #   * an explicit `vanish_timeout` always wins;
     #   * `vanish=false` keeps the bar on screen forever;
     #   * `vanish=true` falls back to the pbar default (or 1.0);
@@ -151,7 +151,7 @@ function add_job!(pbar::ProgBar, iter_or_desc;
         pbar.vanish_timeouts[job] = timeout
     end
 
-    # Sequential-subtask pattern: registering any new job under `parent` completes
+    # sequential-subtask pattern: registering any new job under `parent` completes
     # that parent's previously pending statement subtasks, so only one subtask
     # shows as active at a time.
     _complete_statement_jobs!(pbar, parent)
@@ -160,7 +160,7 @@ function add_job!(pbar::ProgBar, iter_or_desc;
     return job
 end
 
-# True once a job is done: a determinate job is done at its total; an indeterminate
+# true once a job is done: a determinate job is done at its total; an indeterminate
 # job (e.g. a milestone subtask) is done once its finish timestamp is recorded.
 function _job_finished(job::ProgJob)
     @lock job.lock begin
@@ -171,7 +171,7 @@ function _job_finished(job::ProgJob)
     end
 end
 
-# Marks `job` as a milestone container: its total is the number of milestone
+# marks `job` as a milestone container: its total is the number of milestone
 # subtasks it contains, and its state tracks how many of them have completed.
 function _mark_container!(pbar::ProgBar, job::ProgJob)
     @lock pbar.lock begin
@@ -180,7 +180,7 @@ function _mark_container!(pbar::ProgBar, job::ProgJob)
     return nothing
 end
 
-# Sets a container's state to the number of completed milestone subtasks.
+# sets a container's state to the number of completed milestone subtasks.
 function _refresh_container_state!(pbar::ProgBar, parent::ProgJob)
     @lock parent.lock begin
         if parent.total !== nothing
@@ -193,9 +193,9 @@ function _refresh_container_state!(pbar::ProgBar, parent::ProgJob)
     return nothing
 end
 
-# Completes all pending (registered but not yet finished) statement subtasks under
+# completes all pending (registered but not yet finished) statement subtasks under
 # `parent`. Statement subtasks are created by `@progress "desc"` (no loop/block body).
-# If `parent` is a milestone container, its state is advanced to the number of
+# if `parent` is a milestone container, its state is advanced to the number of
 # completed milestones.
 function _complete_statement_jobs!(pbar::ProgBar, parent::Union{ProgJob, Nothing})
     to_complete = @lock pbar.lock begin
@@ -258,7 +258,7 @@ function get_children(pbar::ProgBar, parent::Union{ProgJob, Nothing})
 end
 
 
-# Distance of `job` from the top of the tree (roots are at depth 0).
+# distance of `job` from the top of the tree (roots are at depth 0).
 function _job_depth(pbar::ProgBar, job::ProgJob)
     d = 0
     cur = job
@@ -309,7 +309,7 @@ function get_visible_children(pbar::ProgBar, parent::Union{ProgJob, Nothing},
     return filter(j -> is_job_visible(pbar, j, now_sec), all_children)
 end
 
-# Collects every currently visible job in the tree (depth-first), used to size the
+# collects every currently visible job in the tree (depth-first), used to size the
 # description column so bars line up across all rows.
 function _visible_job_list(pbar::ProgBar, parent::Union{ProgJob, Nothing}, now_sec::Float64)
     jobs = ProgJob[]
@@ -338,31 +338,31 @@ function render_progbar_tree(pbar::ProgBar; bar_width::Int = 40, collapse_comple
     end
     buf = IOBuffer()
     now_sec = time()
-    # Drop expired log lines before measuring the tree: the gutter's height (and so
+    # drop expired log lines before measuring the tree: the gutter's height (and so
     # the area it clears) must match the lines that are actually drawn.
     prune_logs!(pbar, now_sec)
 
     top_jobs = get_visible_children(pbar, nothing, now_sec)
 
-    # Fixed description column: pad every row to the longest visible description
+    # fixed description column: pad every row to the longest visible description
     # (with a sensible minimum) so the bar column lines up across rows.
     visible = _visible_job_list(pbar, nothing, now_sec)
     max_desc = isempty(visible) ? 0 : maximum(length(j.desc) for j in visible)
     desc_width = max(14, max_desc)
 
     if !isempty(pbar.title)
-        # Titled tree: The title serves as the root header, top-level jobs branch under it
+        # titled tree: The title serves as the root header, top-level jobs branch under it
         println(buf, _ANSI_BOLD, pbar.title, _ANSI_RESET)
         _render_job_nodes(buf, pbar, top_jobs, "", syms, bar_width, now_sec, desc_width;
                           collapse_completed = collapse_completed, final_depth = final_depth)
     elseif length(top_jobs) == 1
-        # Untitled single root job: Display the root job flush (no hanging branch prefix)
+        # untitled single root job: Display the root job flush (no hanging branch prefix)
         root_job = top_jobs[1]
         job_rendered = show_progjob_with_theme(root_job, root_job.theme; bar_width = bar_width, desc_width = desc_width)
         println(buf, job_rendered)
         _render_job_logs(buf, pbar, root_job, "", syms, now_sec)
 
-        # Children branch directly from the root (kept unless the root is done and
+        # children branch directly from the root (kept unless the root is done and
         # the requested final depth has been reached)
         root_done = collapse_completed && root_job.total !== nothing && root_job.state >= root_job.total
         if !root_done || final_depth > 0
@@ -373,7 +373,7 @@ function render_progbar_tree(pbar::ProgBar; bar_width::Int = 40, collapse_comple
             end
         end
     else
-        # Untitled multiple top-level jobs: Display with standard branch prefixes
+        # untitled multiple top-level jobs: Display with standard branch prefixes
         _render_job_nodes(buf, pbar, top_jobs, "", syms, bar_width, now_sec, desc_width;
                           collapse_completed = collapse_completed, final_depth = final_depth)
     end
@@ -403,10 +403,10 @@ function _render_job_nodes(
         job_rendered = show_progjob_with_theme(job, job.theme; bar_width = bar_width, desc_width = desc_width)
         println(io, prefix, branch, job_rendered)
 
-        # Intercepted log lines are drawn directly beneath the bar they belong to.
+        # intercepted log lines are drawn directly beneath the bar they belong to.
         _render_job_logs(io, pbar, job, prefix * extension, syms, now_sec)
 
-        # In collapse mode a finished job hides its subtree, keeping only
+        # in collapse mode a finished job hides its subtree, keeping only
         # `final_depth` levels of children below the top of the tree.
         job_done = collapse_completed && job.total !== nothing && job.state >= job.total
         if !(job_done && depth >= final_depth)
@@ -481,7 +481,7 @@ function print_progbar_in_gutter(pbar::ProgBar; io::IO = pbar.io, force::Bool = 
             return
         end
 
-        # Size the bar so the whole line (blinker + desc + bar + pct + rate + eta)
+        # size the bar so the whole line (blinker + desc + bar + pct + rate + eta)
         # fits `term_width` columns instead of wrapping.
         bar_width = clamp(term_width - 60, 10, 40)
         tree_str = render_progbar_tree(pbar; bar_width = bar_width,
@@ -489,7 +489,7 @@ function print_progbar_in_gutter(pbar::ProgBar; io::IO = pbar.io, force::Bool = 
                                        final_depth = pbar.final_depth)
 
         if isempty(tree_str)
-            # Nothing visible: release the whole screen
+            # nothing visible: release the whole screen
             print(io, "\e[r")
             print(io, "\e[", term_height, ";1H")
             flush(io)
@@ -498,13 +498,13 @@ function print_progbar_in_gutter(pbar::ProgBar; io::IO = pbar.io, force::Bool = 
             return
         end
 
-        # Truncate every line to the terminal width so the tree never wraps; this
+        # truncate every line to the terminal width so the tree never wraps; this
         # keeps `tree_height` equal to the number of rows the tree really occupies.
         lines = split(chomp(tree_str), '\n')
         lines = map(l -> _truncate_ansi(l, term_width), lines)
         tree_height = length(lines)
 
-        # Never let the tree overflow the screen: keep the top of the tree only.
+        # never let the tree overflow the screen: keep the top of the tree only.
         if tree_height > term_height - 1
             tree_height = term_height - 1
             resize!(lines, tree_height)
@@ -567,7 +567,7 @@ function with_tree_gutter(f::Function, pbar::ProgBar; io::IO = pbar.io)
     term_height, _ = displaysize(io)
 
     if !pbar.interactive
-        # Non-interactive: nothing to reserve and nothing to redraw, so every
+        # non-interactive: nothing to reserve and nothing to redraw, so every
         # update is an append-only flat line with no escape sequences at all.
         _start_gutter_task!(pbar)
         try
@@ -587,7 +587,7 @@ function with_tree_gutter(f::Function, pbar::ProgBar; io::IO = pbar.io)
         stop_gutter!(pbar)
         pbar.active = false
         print_progbar_in_gutter(pbar; force = true)
-        # Reset scroll region and move cursor to the end
+        # reset scroll region and move cursor to the end
         print(io, "\e[r")
         print(io, "\e[", term_height, ";1H\n")
         flush(io)
@@ -615,7 +615,7 @@ end
 function _start_gutter_task!(pbar::ProgBar)
     pbar.background || return nothing
     pbar.running[] = true
-    # Flat output is append-only, so it is safe to write it from another thread and
+    # flat output is append-only, so it is safe to write it from another thread and
     # it keeps updating during a long, never-yielding loop.  Cursor control is not:
     # an async task can only redraw when the computational loop yields, which is
     # also exactly when interleaving with the user's own output is impossible.
@@ -766,7 +766,7 @@ Base.firstindex(pbar::ProgBar) = 1
 Base.lastindex(pbar::ProgBar) = length(pbar.order)
 Base.getindex(pbar::ProgBar, i::Int) = pbar.order[i]
 
-# Compact REPL summary, e.g. `ProgBar("Pipeline", 7 jobs, 2 roots)`.
+# compact REPL summary, e.g. `ProgBar("Pipeline", 7 jobs, 2 roots)`.
 function Base.show(io::IO, pbar::ProgBar)
     n = length(pbar)
     roots = length(get_children(pbar, nothing))

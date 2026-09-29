@@ -1,13 +1,13 @@
-# Core value types shared by the whole package.
+# core value types shared by the whole package.
 #
-# This file defines the vocabulary the rest of the refactor is built on:
+# this file defines the vocabulary the rest of the refactor is built on:
 #
 #   * AbstractColumn   - the pluggable rendering interface (src/columns.jl);
 #   * LogEntry         - one intercepted log record (src/logger.jl);
 #   * BarState         - the atomic progress counters (src/bar.jl);
 #   * ProgressContext  - a state bound to a layout, a stream and a render task.
 #
-# Nothing here performs I/O; src/engine.jl owns every terminal interaction.
+# nothing here performs I/O; src/engine.jl owns every terminal interaction.
 #
 # Note the deliberate distinction from the older tree renderer:
 #
@@ -17,7 +17,7 @@
 #                     by prog(...) and Progress(...).
 
 # ---------------------------------------------------------------------------
-# Columns
+# columns
 # ---------------------------------------------------------------------------
 
 """
@@ -54,7 +54,7 @@ right now"; the engine drops empty columns along with the whitespace around them
 function render_column end
 
 # ---------------------------------------------------------------------------
-# Render context
+# render context
 # ---------------------------------------------------------------------------
 
 """
@@ -66,7 +66,7 @@ Everything needed to *draw* one progress bar: the atomic BarState, the column
 layout, the output stream, the intercepted-log buffer and the background render
 task.
 
-# Keyword arguments
+# keyword arguments
 - desc:      the bar's description (see Tag's "{desc}" template).
 - layout:    a Vector{AbstractColumn}; defaults to default_layout().
 - io:        output stream (defaults to stdout).
@@ -85,41 +85,41 @@ take the log lock, and every terminal write happens under the write lock.
 mutable struct ProgressContext
     # Atomic counters and timing.
     state          :: BarState
-    # Columns, joined with single spaces.
+    # columns, joined with single spaces.
     layout         :: Vector{AbstractColumn}
-    # Where the bar is drawn.
+    # where the bar is drawn.
     io             :: IO
-    # Whether the stream is an interactive terminal (ANSI) or a flat log stream.
+    # whether the stream is an interactive terminal (ANSI) or a flat log stream.
     tty            :: Bool
-    # Seconds a finished bar stays on screen; Inf means forever.
+    # seconds a finished bar stays on screen; Inf means forever.
     vanish         :: Float64
-    # Seconds between render ticks (1 / fps).
+    # seconds between render ticks (1 / fps).
     dt             :: Float64
-    # Non-interactive mode: emit a line every this many percent.
+    # non-interactive mode: emit a line every this many percent.
     flat_step      :: Int
-    # Intercepted, not-yet-expired log records.
+    # intercepted, not-yet-expired log records.
     logs           :: Vector{LogEntry}
-    # Guards the log buffer.
+    # guards the log buffer.
     log_lock       :: ReentrantLock
-    # Persistent sink destination: a path, an IO, or nothing.
+    # persistent sink destination: a path, an IO, or nothing.
     log_file       :: Union{String, IO, Nothing}
-    # Opened sink stream, or nothing.
+    # opened sink stream, or nothing.
     log_sink       :: Union{IO, Nothing}
-    # Guards the sink.
+    # guards the sink.
     sink_lock      :: ReentrantLock
-    # Guards *all* writes to the output stream.
+    # guards *all* writes to the output stream.
     write_lock     :: ReentrantLock
-    # The background render task, once started.
+    # the background render task, once started.
     task           :: Union{Task, Nothing}
-    # Set to false to ask the render task to stop.
+    # set to false to ask the render task to stop.
     running        :: Threads.Atomic{Bool}
-    # Set once the bar has been finished.
+    # set once the bar has been finished.
     finished       :: Threads.Atomic{Bool}
-    # Number of terminal rows the last drawn frame occupied.
+    # number of terminal rows the last drawn frame occupied.
     rendered_lines :: Int
-    # Last percentage emitted in flat mode (throttles CI output).
+    # last percentage emitted in flat mode (throttles CI output).
     last_flat_pct  :: Int
-    # Counter value observed at the previous tick; see _refresh_timing!.
+    # counter value observed at the previous tick; see _refresh_timing!.
     last_count     :: Int
     # time() of the last frame actually drawn.
     last_render    :: Float64
@@ -160,7 +160,7 @@ _is_tty(io::IO) = _is_tty_impl(_unwrap_io(io))
 _unwrap_io(io::IOContext) = _unwrap_io(io.io)
 _unwrap_io(io::IO) = io
 
-# Only a real terminal (and a non-CI environment) can be drawn to in place.
+# only a real terminal (and a non-CI environment) can be drawn to in place.
 function _is_tty_impl(io)
     io isa Base.TTY || return false
     return !_ci_environment()

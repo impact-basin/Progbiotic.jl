@@ -1,21 +1,21 @@
-# Log interception, transient buffers, persistent sinks and ProgressLogging
+# log interception, transient buffers, persistent sinks and ProgressLogging
 # integration.
 #
-# Two independent renderers need log plumbing:
+# two independent renderers need log plumbing:
 #
 #   * the tree renderer (@progress / ProgBar), whose records live in a
 #     ProgLogStore keyed by ProgJob;
 #   * the column renderer (prog / Progress), whose records live in a
 #     Vector{LogEntry} on a ProgressContext.
 #
-# Both share the three ideas implemented here: records are *intercepted* by a
+# both share the three ideas implemented here: records are *intercepted* by a
 # ProgbioticLogger installed for the scope, buffered per progress bar, and pruned
 # once they are older than the scope's vanish timeout.  When the scope was given a
 # log_file, every record is also appended, permanently and in plain text, to that
 # sink - a transient line on the screen, a durable line on disk.
 
 # ---------------------------------------------------------------------------
-# The logger
+# the logger
 # ---------------------------------------------------------------------------
 
 """
@@ -96,7 +96,7 @@ context itself.
 current_progress_target() = get(task_local_storage(), _PROG_TARGET_KEY, nothing)
 
 # ---------------------------------------------------------------------------
-# Persistent sinks
+# persistent sinks
 # ---------------------------------------------------------------------------
 
 """
@@ -172,7 +172,7 @@ function _close_log_sink!(owner)
 end
 
 # ---------------------------------------------------------------------------
-# Column-renderer log buffer (ProgressContext)
+# column-renderer log buffer (ProgressContext)
 # ---------------------------------------------------------------------------
 
 """The most log lines buffered per bar (older ones are dropped)."""
@@ -188,7 +188,7 @@ function push_log!(ctx::ProgressContext, level::Logging.LogLevel, message; kwarg
     entry = LogEntry(level, _format_log_message(message, kwargs), time(), ctx.vanish)
     @lock ctx.log_lock begin
         push!(ctx.logs, entry)
-        # Bound the buffer: only the newest entries can ever be on screen.
+        # bound the buffer: only the newest entries can ever be on screen.
         overflow = length(ctx.logs) - LOG_BUFFER_LIMIT
         overflow > 0 && deleteat!(ctx.logs, 1:overflow)
     end
@@ -385,7 +385,7 @@ handle_progress_record(::Nothing, payload) = false
 handle_progress_record(bar::ProgContext, payload) = handle_progress_record(bar.parent, payload)
 
 # ---------------------------------------------------------------------------
-# Logger callbacks
+# logger callbacks
 # ---------------------------------------------------------------------------
 
 _captures(logger::ProgbioticLogger, level::Logging.LogLevel) = _captures(logger.capture, level)
@@ -393,7 +393,7 @@ _captures(capture::Bool, level::Logging.LogLevel) = capture
 _captures(capture::Logging.LogLevel, level::Logging.LogLevel) = level >= capture
 _captures(capture::Vector{Logging.LogLevel}, level::Logging.LogLevel) = level in capture
 
-# Debug stays enabled so that @debug records are generated at all: each record is
+# debug stays enabled so that @debug records are generated at all: each record is
 # then either captured or handed to parent unchanged.  The ProgressLogging level
 # (-1) is enabled too, since it sits below Debug.
 Logging.min_enabled_level(logger::ProgbioticLogger) =
@@ -440,7 +440,7 @@ function Logging.handle_message(logger::ProgbioticLogger, level, message, _modul
             return nothing
         end
     end
-    # Not captured here: preserve the record's normal behaviour by handing it to the
+    # not captured here: preserve the record's normal behaviour by handing it to the
     # logger that was current when the scope was entered.
     parent = logger.parent
     if parent !== nothing && Logging.shouldlog(parent, level, _module, group, id)
@@ -450,7 +450,7 @@ function Logging.handle_message(logger::ProgbioticLogger, level, message, _modul
 end
 
 # ---------------------------------------------------------------------------
-# Scope helpers
+# scope helpers
 # ---------------------------------------------------------------------------
 
 """
@@ -468,7 +468,7 @@ function _with_log_capture(f::Function, ctx::ProgContext, capture)
     end
 end
 
-# Run f with the task-local target installed, restoring whatever was there before.
+# run f with the task-local target installed, restoring whatever was there before.
 function _with_scope(f::Function, context)
     previous_context = get(task_local_storage(), _PROG_CTX_KEY, nothing)
     previous_target = get(task_local_storage(), _PROG_TARGET_KEY, nothing)

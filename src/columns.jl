@@ -1,6 +1,6 @@
-# The pieces a bar's line is built from.
+# the pieces a bar's line is built from.
 #
-# Every column is a tiny immutable value implementing
+# every column is a tiny immutable value implementing
 #
 #     render_column(col::MyColumn, state::BarState) -> String
 #
@@ -9,7 +9,7 @@
 # instead of dispatching through Vector{AbstractColumn} on every frame.
 
 # ---------------------------------------------------------------------------
-# Shared formatting
+# shared formatting
 # ---------------------------------------------------------------------------
 
 """
@@ -175,7 +175,7 @@ function _percent_text(state::BarState, digits::Int)
 end
 
 # ---------------------------------------------------------------------------
-# Bar
+# bar
 # ---------------------------------------------------------------------------
 
 # marquee speed, in track positions per second
@@ -274,7 +274,7 @@ function _frame(col::Bar, filled::AbstractString, trailing::AbstractString,
 end
 
 # ---------------------------------------------------------------------------
-# Percentage and count
+# percentage and count
 # ---------------------------------------------------------------------------
 
 """

@@ -1,6 +1,6 @@
-# Rendering of intercepted log lines underneath their progress bars.
+# rendering of intercepted log lines underneath their progress bars.
 
-# The colour map, the level names and the line formatters live in src/engine.jl,
+# the colour map, the level names and the line formatters live in src/engine.jl,
 # which is included before this file.
 """The most log lines drawn under a single bar."""
 const MAX_RENDERED_LOGS = 8

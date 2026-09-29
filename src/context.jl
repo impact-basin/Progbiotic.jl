@@ -1,16 +1,16 @@
-# Log-capture plumbing shared by the logger (`src/logger.jl`), the renderer
+# log-capture plumbing shared by the logger (`src/logger.jl`), the renderer
 # (src/render.jl) and the @progress macro (src/macros.jl).
 
-# Drops every expired entry from `buf`, in place.
+# drops every expired entry from `buf`, in place.
 function _prune_buffer!(buf::Vector{LogEntry}, now_sec::Float64)
     filter!(e -> !_expired(e, now_sec), buf)
     return buf
 end
 
-# Renders a log message together with its keyword arguments, e.g.
+# renders a log message together with its keyword arguments, e.g.
 # `"checkpoint" (record=25)`.
 function _format_log_message(message, kwargs)
-    # Multi-line messages are flattened: the gutter measures exactly one row per
+    # multi-line messages are flattened: the gutter measures exactly one row per
     # entry, so an embedded newline would desynchronise its height and tear the UI.
     msg = replace(string(message), '\n' => ' ', '\r' => ' ')
     isempty(kwargs) && return msg
@@ -53,7 +53,7 @@ ProgLogStore(; max_entries::Int = 1024) =
 
 _log_lock(pbar) = pbar.logs.lock
 
-# Buffer for `job`, created on first use and shared by every context referring to
+# buffer for `job`, created on first use and shared by every context referring to
 # that job.
 function _log_buffer(pbar, job::Union{ProgJob, Nothing})
     job === nothing && return LogEntry[]
@@ -63,7 +63,7 @@ function _log_buffer(pbar, job::Union{ProgJob, Nothing})
     end
 end
 
-# The vanish timeout a log entry inherits: the timeout resolved for the job of the
+# the vanish timeout a log entry inherits: the timeout resolved for the job of the
 # scope it was logged in (`Inf` = keep on screen).
 function _log_timeout(pbar, job::Union{ProgJob, Nothing})
     job === nothing && return Inf
@@ -112,8 +112,8 @@ function push_log!(ctx::ProgContext, level::Logging.LogLevel, message; kwargs...
         overflow = length(buf) - store.max_entries
         overflow > 0 && deleteat!(buf, 1:overflow)
     end
-    # Keep the gutter in step with the log stream; the bar's own `dt` throttles this.
-    # Permanent half of the contract: the line may vanish from the screen, but a
+    # keep the gutter in step with the log stream; the bar's own `dt` throttles this.
+    # permanent half of the contract: the line may vanish from the screen, but a
     # configured sink keeps it forever.
     _write_sink!(pbar, format_plain_log_line(entry))
     _request_gutter_refresh(pbar)
@@ -186,7 +186,7 @@ function has_active_logs(pbar, job::Union{ProgJob, Nothing}, now_sec::Float64 = 
     end
 end
 
-# Forward helper methods so subroutines can interact directly with the context
+# forward helper methods so subroutines can interact directly with the context
 add_job!(ctx::ProgContext, iter_or_desc; parent = ctx.parent, kwargs...) =
     add_job!(ctx.pbar, iter_or_desc; parent = parent, kwargs...)
 

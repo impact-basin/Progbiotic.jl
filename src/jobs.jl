@@ -9,7 +9,7 @@ second wraps an iterable, inferring `total` from its length when possible, and
 behaves transparently as that iterable (`for`, indexing, comprehensions,
 `@threads` all work).
 
-# Keyword arguments
+# keyword arguments
 - `total`: number of items; `nothing` makes the bar indeterminate (no rate/ETA —
   it reports its elapsed time instead).
 - `theme`: the [`Theme`](@ref) used for colors and glyphs.
@@ -37,7 +37,7 @@ mutable struct ProgJob{I}
     io          :: IO
     postfix     :: Dict{Symbol, Any}
 
-    # Standalone job (no iterator wrapped)
+    # standalone job (no iterator wrapped)
     function ProgJob(desc::String = "";
                      total::Union{Int, Nothing} = nothing,
                      theme::Theme = AMBER,
@@ -51,7 +51,7 @@ mutable struct ProgJob{I}
                      Dict{Symbol, Any}())
     end
 
-    # Iterator-wrapping job: ProgJob(iter, [theme]; desc="...", dt=0.05, io=stdout)
+    # iterator-wrapping job: ProgJob(iter, [theme]; desc="...", dt=0.05, io=stdout)
     function ProgJob(iter::I, theme::Theme = AMBER;
                      desc::String = "",
                      total::Union{Int, Nothing} = nothing,
@@ -67,7 +67,7 @@ mutable struct ProgJob{I}
     end
 end
 
-# Compact REPL summary, e.g. `ProgJob("Downloading", 3/10)` or `ProgJob("Watching")`.
+# compact REPL summary, e.g. `ProgJob("Downloading", 3/10)` or `ProgJob("Watching")`.
 function Base.show(io::IO, job::ProgJob)
     desc, state, total = lock(job.lock) do
         (job.desc, job.state, job.total)
@@ -79,19 +79,19 @@ end
 
 function Base.iterate(job::ProgJob)
     job.iter === nothing && throw(ArgumentError("This ProgJob does not wrap an iterable."))
-    # Reset progress timing and state
+    # reset progress timing and state
     job.state = 0
     job.start = time()
     job.last_update = job.start
     job.last_render = 0.0
 
-    # Initial draw (0% or starting spinner)
+    # initial draw (0% or starting spinner)
     print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme))
     flush(job.io)
 
     next = iterate(job.iter)
     if next === nothing
-        # Empty collection: finish immediately
+        # empty collection: finish immediately
         print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme), "\n")
         flush(job.io)
         return nothing
@@ -103,12 +103,12 @@ function Base.iterate(job::ProgJob)
     return (item, iter_state)
 end
 
-# Subsequent iteration steps
+# subsequent iteration steps
 function Base.iterate(job::ProgJob, iter_state)
     next = iterate(job.iter, iter_state)
 
     if next === nothing
-        # Reached the end: print final 100% frame and a newline
+        # reached the end: print final 100% frame and a newline
         print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme), "\n")
         flush(job.io)
         return nothing
@@ -118,7 +118,7 @@ function Base.iterate(job::ProgJob, iter_state)
     job.state += 1
     job.last_update = time()
 
-    # Throttled redraw to maintain high performance in tight loops
+    # throttled redraw to maintain high performance in tight loops
     now_sec = time()
     if (now_sec - job.last_render >= job.dt) || (job.total !== nothing && job.state == job.total)
         print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme))
@@ -129,21 +129,21 @@ function Base.iterate(job::ProgJob, iter_state)
     return (item, next_iter_state)
 end
 
-# Forward iterator traits so ProgJob behaves transparently like the underlying collection
+# forward iterator traits so ProgJob behaves transparently like the underlying collection
 Base.length(job::ProgJob) = job.total !== nothing ? job.total : length(job.iter)
 Base.eltype(::Type{ProgJob{I}}) where I = eltype(I)
 Base.size(job::ProgJob{I}) where I = job.total !== nothing ? (job.total,) : size(job.iter)
 Base.IteratorSize(::Type{ProgJob{I}}) where I = Base.IteratorSize(I)
 Base.IteratorEltype(::Type{ProgJob{I}}) where I = Base.IteratorEltype(I)
 
-# Forward Indexing & Array Bounds Interfaces
+# forward Indexing & Array Bounds Interfaces
 Base.firstindex(job::ProgJob) = firstindex(job.iter)
 Base.lastindex(job::ProgJob)  = lastindex(job.iter)
 Base.eachindex(job::ProgJob)  = eachindex(job.iter)
 Base.axes(job::ProgJob)       = axes(job.iter)
 Base.keys(job::ProgJob)       = keys(job.iter)
 
-# Thread-safe getindex: updates progress and renders throttled output
+# thread-safe getindex: updates progress and renders throttled output
 function Base.getindex(job::ProgJob, idx...)
     val = getindex(job.iter, idx...)
 
@@ -152,7 +152,7 @@ function Base.getindex(job::ProgJob, idx...)
             job.start = time()
             job.last_update = job.start
             job.last_render = 0.0
-            # Initial 0% draw
+            # initial 0% draw
             print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme))
             flush(job.io)
         end
@@ -163,10 +163,10 @@ function Base.getindex(job::ProgJob, idx...)
         now_sec = time()
         is_final = (job.total !== nothing && job.state == job.total)
 
-        # Render if throttled interval elapsed OR if all items are completed
+        # render if throttled interval elapsed OR if all items are completed
         if is_final || (now_sec - job.last_render >= job.dt)
             if is_final
-                # Print 100% completed bar with final newline
+                # print 100% completed bar with final newline
                 print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme), "\n")
             else
                 print(job.io, "\r\e[K", show_progjob_with_theme(job, job.theme))
@@ -204,7 +204,7 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
     p = clamp(prog, 0.0, 1.0)
     k = length(t.barunits)
 
-    # Sub-character stipple resolution
+    # sub-character stipple resolution
     total_subunits = round(Int, p * width * k)
     full_chars = div(total_subunits, k)
     rem_subunits = rem(total_subunits, k)
@@ -212,7 +212,7 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
     fg_color = isempty(t.palette) ? "" : palette_gradient(t.palette, prog)
     dim_color = isempty(t.palette) ? _ANSI_DIM : ansi_fg(t.palette[begin])
 
-    # Filled portion; a `head` glyph replaces the tip of an in-progress bar
+    # filled portion; a `head` glyph replaces the tip of an in-progress bar
     head = t.head
     if head === nothing || p >= 1.0 || (full_chars == 0 && rem_subunits == 0)
         bar_full = repeat(string(t.barunits[end]), full_chars)
@@ -224,7 +224,7 @@ function _render_bar(prog::Float64, t::Theme; width::Int = 40)
         filled = string(repeat(string(t.barunits[end]), max(0, full_chars - 1)), head)
     end
 
-    # Empty portion
+    # empty portion
     empty_count = width - full_chars - (rem_subunits > 0 ? 1 : 0)
     bar_empty = repeat(string(t.empty), max(0, empty_count))
 
@@ -244,7 +244,7 @@ vertically across rows. A per-job `bar_width` override (from `@progress width=..
 takes precedence over the passed `bar_width`.
 """
 function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc_width::Int = 14, rate_width::Int = 10)
-    # Thread-safe snapshot of job state
+    # thread-safe snapshot of job state
     desc, state, total, start_time, finish_time, last_update, job_width, metrics = lock(p.lock) do
         (p.desc, p.state, p.total, p.start, p.finish, p.last_update, p.bar_width, copy(p.postfix))
     end
@@ -256,7 +256,7 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
     # freeze while the job is idle (e.g. waiting on a nested process).
     work_until = finish_time ≈ 0.0 ? last_update : finish_time
     work_elapsed = max(0.0, work_until - start_time)
-    # Displayed elapsed: the current run time for active jobs, frozen at completion.
+    # displayed elapsed: the current run time for active jobs, frozen at completion.
     run_elapsed = finish_time ≈ 0.0 ? max(0.0, now_sec - start_time) : max(0.0, finish_time - start_time)
 
     rate = work_elapsed > 0 ? (state / work_elapsed) : 0.0
@@ -280,8 +280,8 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
 
     # 3. [Progress] & 4. [ETA]
     if total === nothing
-        # Indeterminate mode (no total known): no rate and no ETA; report elapsed.
-        # An indeterminate job represents a single unit of work (milestones never
+        # indeterminate mode (no total known): no rate and no ETA; report elapsed.
+        # an indeterminate job represents a single unit of work (milestones never
         # advance their own state), so a fresh job reads "1 unit".
         shown = max(state, 1)
         prog_str = string(_ANSI_DIM, "$shown unit", shown == 1 ? "" : "s", _ANSI_RESET)
@@ -292,11 +292,11 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
         end
         return "$blinker_str $desc_str$prog_str $eta_str$postfix"
     else
-        # Determinate mode
+        # determinate mode
         prog = total > 0 ? (state / total) : 1.0
         pct = round(Int, prog * 100)
         bar = _render_bar(prog, t; width = bar_width)
-        # Pad the state to the total's width so "(x/y)" lines up when totals agree
+        # pad the state to the total's width so "(x/y)" lines up when totals agree
         prog_str = "$bar $(lpad(pct, 3))% ($(lpad(state, ndigits(total)))/$total)"
 
         if prog >= 1.0
@@ -314,11 +314,11 @@ function show_progjob_with_theme(p::ProgJob, t::Theme; bar_width::Int = 40, desc
         end
     end
 
-    # Return full rendered line: [blinker] [desc] [progress] [rate] [eta]
+    # return full rendered line: [blinker] [desc] [progress] [rate] [eta]
     return "$blinker_str $desc_str$prog_str [$(rpad(rate_str, rate_width))] $eta_str$postfix"
 end
 
-# Advances a job's state under its lock, stamps `last_update`, and reports whether
+# advances a job's state under its lock, stamps `last_update`, and reports whether
 # the job has now reached its total. Shared by the standalone and tree update!s.
 function _advance!(job::ProgJob, new::Union{Int, Nothing} = nothing)
     @lock job.lock begin
@@ -388,13 +388,13 @@ function with_job(
     results = total !== nothing ? Vector{Any}(undef, total) : Any[]
     last_render = 0.0
 
-    # Initial draw
+    # initial draw
     print(io, "\r\e[K", show_progjob_with_theme(job, theme))
     flush(io)
 
     try
         for (i, item) in enumerate(iter)
-            # Execute user payload
+            # execute user payload
             res = f(item)
             if total !== nothing
                 results[i] = res
@@ -402,10 +402,10 @@ function with_job(
                 push!(results, res)
             end
 
-            # Update job state
+            # update job state
             update!(job, i)
 
-            # Throttled render (and always render on the final iteration)
+            # throttled render (and always render on the final iteration)
             now_sec = time()
             if (now_sec - last_render >= dt) || (total !== nothing && i == total)
                 print(io, "\r\e[K", show_progjob_with_theme(job, theme))
@@ -414,7 +414,7 @@ function with_job(
             end
         end
     finally
-        # Final render to ensure 100% status is displayed, followed by a newline
+        # final render to ensure 100% status is displayed, followed by a newline
         print(io, "\r\e[K", show_progjob_with_theme(job, theme), "\n")
         flush(io)
     end

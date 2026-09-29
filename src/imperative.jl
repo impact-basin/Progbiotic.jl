@@ -1,4 +1,4 @@
-# Manual progress handles: Progress, next!, update!, finish!.
+# manual progress handles: Progress, next!, update!, finish!.
 #
 #     p = Progress(100; desc = "Custom Pipeline", layout = my_layout)
 #     for i in 1:100
@@ -6,7 +6,7 @@
 #     end
 #     finish!(p)
 #
-# This is the escape hatch for when the work is not a simple for loop over a
+# this is the escape hatch for when the work is not a simple for loop over a
 # collection: an event-driven protocol, several loops sharing one bar, or work done
 # from a dozen threads.  Advancing the handle is a single atomic add, so a handle is
 # safe to share across threads exactly as prog(...) is.
@@ -35,7 +35,7 @@ threads is safe:
     finish!(p)
 """
 struct Progress
-    # The render context that owns the state, the layout and the render task.
+    # the render context that owns the state, the layout and the render task.
     ctx :: ProgressContext
 end
 

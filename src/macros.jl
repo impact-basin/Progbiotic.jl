@@ -19,7 +19,7 @@ function _parse_progress_item(item, res::Dict{Symbol, Any})
         res[:theme] = item
     elseif item isa Expr
         if item.head == :call && item.args[1] == :(=>)
-            # Pair binding: (pbar => args...)
+            # pair binding: (pbar => args...)
             res[:bind] = item.args[2]
             _parse_progress_item(item.args[3], res)
         elseif item.head == :tuple
@@ -27,7 +27,7 @@ function _parse_progress_item(item, res::Dict{Symbol, Any})
                 _parse_progress_item(elem, res)
             end
         elseif item.head == :(=) || item.head == :kw
-            # Keyword form (full name or short alias, e.g. `final_depth=1` or `d=1`)
+            # keyword form (full name or short alias, e.g. `final_depth=1` or `d=1`)
             key, val = item.args[1], item.args[2]
             key, val = _canonical_progress_option(key, val)
             res[key] = val
@@ -79,14 +79,14 @@ function _canonical_progress_option(key, val)
             error("@progress: `v=$val` is ambiguous — use `vanish=<bool>` (e.g. `v=false` keeps bars on screen) or `vanish_timeout=<seconds>` (e.g. `v=1.2`)")
         end
     elseif key === :vanish_timeout && val isa Real
-        # Normalise e.g. `vanish_timeout=1` to Float64 for add_job!
+        # normalise e.g. `vanish_timeout=1` to Float64 for add_job!
         return (:vanish_timeout, float(val))
     elseif key === :vanish && val isa Real
         # `vanish=2.0` is the numeric form of `vanish_timeout=2.0`: the timeout
         # applies to both the bar and the log lines it holds.
         return (:vanish_timeout, float(val))
     elseif key === :capture || key === :capture_logs
-        # Which log levels are intercepted (`true`/`false`, a LogLevel, or a
+        # which log levels are intercepted (`true`/`false`, a LogLevel, or a
         # collection of levels/symbols). A macro-level option: it is never
         # forwarded to `add_job!`.
         return (:capture_logs, val)
@@ -130,7 +130,7 @@ function _parse_progress_args(args)
     return res
 end
 
-# Keyword arguments passed through to `add_job!` / `_statement_job` when set.
+# keyword arguments passed through to `add_job!` / `_statement_job` when set.
 function _extract_extra_kws(opts)
     kws = Any[]
     for key in (:vanish, :vanish_timeout, :spinner, :barunits, :empty, :caps, :head, :width)
@@ -266,7 +266,7 @@ function _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
         mark = milestone_count > 0 ? :(Progbiotic._mark_container!($pbar_sym, $job_sym)) : :()
     end
 
-    # The level's body runs with a logger that captures log records into this
+    # the level's body runs with a logger that captures log records into this
     # level's job. Nested levels install their own logger, which shadows this one,
     # so log calls always resolve to the innermost active context.
     log_context = :(Progbiotic.ProgContext($pbar_sym, $job_sym))
@@ -293,7 +293,7 @@ function _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
     end
 end
 
-# Counts the direct `@progress "desc"` statement invocations in a begin/end block
+# counts the direct `@progress "desc"` statement invocations in a begin/end block
 # body. These are the block's "milestones": they give the block job its total and
 # each one completed advances the block's progress by one.
 function _count_milestones(body_expr)
@@ -305,7 +305,7 @@ function _count_milestones(body_expr)
             m_args = _extract_macrocall_args(arg)
             if !isempty(m_args)
                 last = m_args[end]
-                # Statement-form only: no loop (possibly macro-wrapped) and no block body.
+                # statement-form only: no loop (possibly macro-wrapped) and no block body.
                 if !(last isa Expr && (last.head == :block || _contains_for(last)))
                     n += 1
                 end
@@ -337,7 +337,7 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
     # A bare `@progress "desc"` statement has no loop/block body: all args are config.
     opts = _parse_progress_args(is_loop || is_block ? cfg_args : m_args)
 
-    # Inherit vanishing behaviour from the enclosing @progress level.
+    # inherit vanishing behaviour from the enclosing @progress level.
     if parent_opts !== nothing
         if opts[:vanish] === nothing && parent_opts[:vanish] !== nothing
             opts[:vanish] = parent_opts[:vanish]
@@ -360,14 +360,14 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
         ctxv = gensym("with_ctx")
         level_pbar   = :($ctxv.pbar)
         level_parent = :($ctxv.parent)
-        # The `with=` context is an existing value: rebind it around this level.
+        # the `with=` context is an existing value: rebind it around this level.
         carried      = opts[:with] isa Symbol ? opts[:with] : thread_ctx
         block_thread = carried
     else
         ctxv = nothing
         level_pbar   = pbar_sym
         level_parent = parent_job_sym
-        # The inherited context tracks this level (restored afterwards); a level's
+        # the inherited context tracks this level (restored afterwards); a level's
         # own `bind` is a fresh assignment handled by the bind_assignment instead.
         carried      = opts[:bind] isa Symbol ? opts[:bind] : thread_ctx
         block_thread = thread_ctx
@@ -397,7 +397,7 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
     end
 
     if opts[:with] !== nothing
-        # Evaluate the context once, check it, and run the level's code against it.
+        # evaluate the context once, check it, and run the level's code against it.
         guard = :($ctxv isa Progbiotic.ProgContext ||
                   error("@progress: `with=` expects a ProgContext (e.g. one bound by the caller's @progress), got ", repr($ctxv)))
         block = quote
@@ -496,7 +496,7 @@ enclosing `begin ... end` block's total is the number of milestones it contains,
 and its progress advances as each milestone completes (here `foo` runs 0/3 → 3/3).
 Finished milestones are kept on screen by `final_depth` (e.g. `d=1` above).
 
-# Contexts and subroutines
+# contexts and subroutines
 
 A context can be bound with `(ctx => "desc")` or a bare symbol as the first
 argument (`@progress ctx "desc"`). The bound context automatically tracks the
@@ -519,7 +519,7 @@ so it can be passed to subroutines:
 (no new gutter). The context is also scoped-rebound to the new job inside its body,
 so deeper calls thread further, and restored afterwards.
 
-# Syntax
+# syntax
 - `@progress "Description" for ...`
 - `@progress ("Description", THEME) for ...`
 - `@progress (pbar => THEME) for ...`  (binds `pbar` to a `ProgContext`)
@@ -529,7 +529,7 @@ so deeper calls thread further, and restored afterwards.
 - `@progress ctx "Description" for ...`  (binds `ctx`; shorthand for `(ctx => ...)`)
 - `@progress "Description" with=ctx for ...`  (register under `ctx`, e.g. in a subroutine)
 
-# Short form options
+# short form options
 
 The keyword options accept short aliases:
 - `d=1`      — `final_depth=1` (levels of children kept in the final render)
@@ -544,7 +544,7 @@ option:
         ...
     end
 
-# Per-bar styling
+# per-bar styling
 
 A level can override its theme's glyphs or bar width without defining a whole
 theme (`spinner`/`barunits`/`caps`/`head` may be strings or `Char` vectors):
@@ -557,7 +557,7 @@ theme (`spinner`/`barunits`/`caps`/`head` may be strings or `Char` vectors):
 bar (e.g. `█████>░░░`). To build a custom theme by mixing elements of the built-in
 ones, use the `Theme` copy constructor: `Theme(AMBER; spinner=EMERALD.spinner)`.
 
-# Vanishing
+# vanishing
 
 By default, completed bars vanish from the tree shortly after finishing
 (`vanish_timeout` defaults to 0.5s), so a long-running loop does not fill the
@@ -565,7 +565,7 @@ screen with stale, finished sub-bars. Pass `vanish=false` to keep every bar on
 screen, or `vanish_timeout=<seconds>` to control how long finished bars linger.
 These options are inherited by nested `@progress` levels unless overridden.
 
-# Log capture
+# log capture
 
 `@info`, `@debug`, `@warn` and `@error` calls inside a `@progress` scope are
 intercepted and drawn underneath the bar of the innermost active job, then pruned
@@ -592,7 +592,7 @@ so they are state rather than history and never clutter the scrollback:
         set_postfix!(loss = round(loss, digits = 4), lr = 1e-4)
     end
 
-# Permanent logs
+# permanent logs
 
 Every intercepted record can also be appended, permanently and in plain text, to a
 file or a stream, so a line that has vanished from the screen still survives in the
@@ -605,7 +605,7 @@ build log:
 log_file accepts a path (opened in append mode, and closed when the scope ends) or
 any IO you own. Nested levels inherit the sink of the level that set it.
 
-# Output stream
+# output stream
 
 A scope draws to stdout by default. Pass io= to send it elsewhere, which is mainly
 useful in tests and in library code that manages its own streams:
@@ -618,7 +618,7 @@ When the stream is not an interactive terminal - a pipe, a redirected file, or a
 build - the scope emits flat, ANSI-free lines instead of drawing a gutter, and
 progress is reported at most once per flat_step percent.
 
-# Final depth
+# final depth
 
 Once the tree completes, the live gutter collapses finished jobs to just the
 top-level summary. Pass `final_depth=N` to keep `N` levels of children in the

@@ -1,4 +1,4 @@
-# Hex colour literals, and the only two things this package does with colour:
+# hex colour literals, and the only two things this package does with colour:
 # turning one into an escape, and interpolating along a palette.
 
 """Terminal attributes the renderer uses."""

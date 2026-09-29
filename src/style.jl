@@ -63,12 +63,12 @@ function Theme(base::Theme;
     return Theme(base.name, palette, barunits, empty, spinner, _as_caps(caps), _as_head(head))
 end
 
-# Normalises a `caps` override (a 2-char string like "[]" or a Char pair) to a pair.
+# normalises a `caps` override (a 2-char string like "[]" or a Char pair) to a pair.
 _as_caps(caps) = caps isa AbstractString ? (first(caps), last(caps)) : (caps[1], caps[2])
-# Normalises a `head` override (a char or single-char string) to a Char.
+# normalises a `head` override (a char or single-char string) to a Char.
 _as_head(head) = head isa AbstractString ? first(head) : head
 
-# Merges per-job style overrides (spinner/barunits/empty/caps/head) into a theme;
+# merges per-job style overrides (spinner/barunits/empty/caps/head) into a theme;
 # returns the theme unchanged when no override is given.
 function _apply_style(t::Theme, spinner, barunits, empty, caps, head)
     if spinner === nothing && barunits === nothing && empty === nothing &&
