@@ -1,19 +1,19 @@
-# the render engine: TTY detection, the background render task, the frame-rate
-# limiter and the ANSI terminal controls.
+# the render engine: TTY detection, the gutter, the frame-rate limiter and the
+# background render task.
 #
-# the contract this file exists to uphold is simple: *the computational loop never
-# touches the terminal*.  Advancing a bar is an atomic add; drawing happens on a
-# separate Task that wakes at most fps times a second, reads the atomics, and writes
-# one buffer under a lock.  A for loop over 10^7 items therefore pays for a handful
-# of atomic adds per item and nothing else.
+# the contract this file upholds is simple: *the computational loop never touches the
+# terminal*. Advancing a bar is an atomic add; drawing happens on a separate Task that
+# wakes at most fps times a second, reads the atomics, and writes one buffer under a
+# lock. A for loop over 10^7 items therefore pays for a handful of atomic adds per item
+# and nothing else.
 #
 # two output modes share that machinery:
 #
-#   * interactive (a terminal): a live bar redrawn in place with ANSI cursor
-#     control, with transient log lines drawn underneath and erased when they
-#     expire;
-#   * non-interactive (a pipe, a redirected file, CI): flat, append-only lines with
-#     no escape sequences at all, emitted once per flat_step percent.
+#   * interactive (a terminal): the tree is kept in a gutter reserved at the bottom of
+#     the screen, behind a scroll region, so the user's own output scrolls above it
+#     instead of being overwritten by the next frame;
+#   * non-interactive (a pipe, a redirected file, CI): flat, append-only lines with no
+#     escape sequences at all, emitted once per flat_step percent per node.
 
 # ---------------------------------------------------------------------------
 # ANSI helpers
@@ -21,14 +21,8 @@
 
 const _CSI = "\e["
 
-"""Move the cursor up n rows (no-op for n <= 0)."""
-_cursor_up(n::Int) = n > 0 ? string(_CSI, n, "A") : ""
-
-"""Move the cursor down n rows (no-op for n <= 0)."""
-_cursor_down(n::Int) = n > 0 ? string(_CSI, n, "B") : ""
-
-"""Erase from the cursor to the end of the line."""
-const _ERASE_LINE = "\e[K"
+"""Position the cursor at a row and column, one-based."""
+_at(row::Int, col::Int = 1) = string(_CSI, row, ";", col, "H")
 
 # colours for intercepted log lines, by level.
 const _LOG_LEVEL_COLORS = Dict{Logging.LogLevel, String}(
@@ -57,9 +51,9 @@ A log record as one plain, ANSI-free line, e.g.
 
     [INFO] checkpoint at record 25
 
-This is the format used both for the persistent log_file sink and for every
-intercepted record in non-interactive mode: a CI log is a file, and a file should
-not contain cursor control sequences.
+This is the format used both for the persistent log_file sink and for every intercepted
+record in non-interactive mode: a CI log is a file, and a file should not contain cursor
+control sequences.
 """
 function format_plain_log_line(entry::LogEntry)
     return string("[", _log_level_name(entry.level), "] ", entry.message)
@@ -68,8 +62,8 @@ end
 """
     format_log_line(entry::LogEntry) -> String
 
-A log record as a colour-coded line for the interactive display.  The coloured bar
-glyph marks the line as progress output rather than user output.
+A log record as a colour-coded line for the interactive display. The coloured bar glyph
+marks the line as progress output rather than user output.
 """
 function format_log_line(entry::LogEntry)
     return string(_log_color(entry.level), "▏", _log_level_name(entry.level), " ",
@@ -77,233 +71,246 @@ function format_log_line(entry::LogEntry)
 end
 
 # ---------------------------------------------------------------------------
-# frames
+# terminal detection
 # ---------------------------------------------------------------------------
 
 """
-    render_frame(ctx::ProgressContext) -> String
+    _is_tty(io) -> Bool
 
-Render the bar itself: every column in the layout, joined with single spaces, with
-empty columns dropped.  This is the single line the whole design is built around,
-and it is pure: it reads the atomics and returns a string, touching no I/O.
+Whether the stream is an interactive terminal, i.e. whether ANSI cursor control is safe.
+
+Julia's Base has no isatty; the idiomatic test is whether the stream is a Base.TTY (an
+IOContext is unwrapped first). Redirecting stdout to a file or a pipe -- or running under
+CI, where CI=true is conventionally exported -- turns this off, and the engine then
+emits flat, ANSI-free log lines instead.
 """
-function render_frame(ctx::ProgressContext)
-    parts = String[]
-    for column in ctx.layout
-        text = render_column(column, ctx.state)
-        isempty(text) || push!(parts, text)
-    end
-    return join(parts, " ")
+_is_tty(io::IO) = _is_tty_impl(_unwrap_io(io))
+
+_unwrap_io(io::IOContext) = _unwrap_io(io.io)
+_unwrap_io(io::IO) = io
+
+# only a real terminal (and a non-CI environment) can be drawn to in place.
+function _is_tty_impl(io)
+    io isa Base.TTY || return false
+    return !_ci_environment()
 end
 
-"""The currently active (non-expired) log entries, oldest first."""
-rendered_logs(ctx::ProgressContext, now_sec::Float64 = time()) = active_logs(ctx, now_sec)
-
-"""
-    render_block(ctx::ProgressContext) -> Vector{String}
-
-The complete frame to draw: the bar line followed by one line per live log record.
-"""
-function render_block(ctx::ProgressContext, now_sec::Float64 = time())
-    lines = String[render_frame(ctx)]
-    for entry in rendered_logs(ctx, now_sec)
-        push!(lines, format_log_line(entry))
-    end
-    return lines
-end
-
-"""
-    render_flat_line(ctx::ProgressContext) -> String
-
-One line of the non-interactive format, e.g.
-
-    [INFO] Parsing Records 25% (250/1000) 412.5 it/s ETA 00:00:01 [loss=0.041]
-
-Spinners and bars are dropped: they carry no information in a log file, and the
-whole point of this mode is output you can grep.
-"""
-function render_flat_line(ctx::ProgressContext)
-    state = ctx.state
-    label = isempty(state.desc[]) ? "Progress" : state.desc[]
-    done = state.current[]
-    total = state.total
-
-    head = if total === nothing
-        string("[INFO] ", label, " ", done, " (indeterminate)")
-    else
-        done = clamp(done, 0, total)
-        pct = total > 0 ? floor(Int, 100 * done / total) : 100
-        string("[INFO] ", label, " ", pct, "% (", done, "/", total, ")")
-    end
-
-    extras = String[]
-    for column in ctx.layout
-        # the description and the percentage are already in the head, and a spinner
-        # or a bar would only add noise.
-        (column isa Tag || column isa Spinner ||
-         column isa Bar || column isa Percent) && continue
-        text = render_column(column, state)
-        isempty(text) || push!(extras, text)
-    end
-    postfix = postfix_text(state)
-    isempty(postfix) || push!(extras, string("[", postfix, "]"))
-
-    isempty(extras) && return head
-    return string(head, " ", join(extras, " "))
-end
-
-"""
-    flat_percentage(ctx::ProgressContext) -> Int
-
-The bar's integer completion percentage, or -1 for an indeterminate bar.
-"""
-function flat_percentage(ctx::ProgressContext)
-    state = ctx.state
-    total = state.total
-    total === nothing && return -1
-    total <= 0 && return 100
-    return clamp(floor(Int, 100 * state.current[] / total), 0, 100)
+"""True when the CI environment variable marks a non-interactive build."""
+function _ci_environment()
+    value = lowercase(strip(get(ENV, "CI", "")))
+    return value == "true" || value == "1" || value == "yes"
 end
 
 # ---------------------------------------------------------------------------
-# drawing
+# timing
 # ---------------------------------------------------------------------------
 
 """
-    _draw_tty!(ctx) -> Bool
+    _refresh_timing!(node)
 
-Redraw the bar (and its live logs) in place.  Returns whether anything was written.
+Stamp each node's last-advance time, but only for the nodes whose counter actually moved
+since the previous tick.
 
-The cursor is assumed to sit on the row *after* the block that is currently drawn,
-and ctx.rendered_lines records how many rows that block occupied, so the block can
-be overwritten exactly.  A shrinking block clears its own leftovers, and the whole
-frame is assembled in an IOBuffer and written with a single write, so a concurrent
-println from another task can never land in the middle of an escape sequence.
+This is what lets rate and ETA freeze while a bar waits on a nested job without costing
+anything in the hot loop: advancing a bar stays a single atomic add, and the timestamp is
+refreshed from the render tick, which already runs at fps.
 """
-function _draw_tty!(ctx::ProgressContext)
-    now_sec = time()
-    prune_logs!(ctx, now_sec)
-    lines = render_block(ctx, now_sec)
-    previous = ctx.rendered_lines
+function _refresh_timing!(node::Progress)
+    state = node.state
+    count = pbdone(state)
+    if count != node.paint.count
+        node.paint.count = count
+        state.last_update = time()
+    end
+    for kid in children(node)
+        _refresh_timing!(kid)
+    end
+    return nothing
+end
 
-    buffer = IOBuffer()
-    previous > 0 && print(buffer, _cursor_up(previous))
-    print(buffer, "\r")
-    for line in lines
-        print(buffer, _ERASE_LINE, line, "\n")
-    end
-    # erase rows left over from a taller previous frame.
-    extra = previous - length(lines)
-    for _ in 1:max(0, extra)
-        print(buffer, _ERASE_LINE, "\n")
-    end
-    extra > 0 && print(buffer, _cursor_up(extra))
+# ---------------------------------------------------------------------------
+# the gutter
+# ---------------------------------------------------------------------------
 
-    @lock ctx.write_lock begin
-        write(ctx.io, take!(buffer))
-        flush(ctx.io)
-        ctx.rendered_lines = length(lines)
+"""
+    _gutter_lines(root, term_height, term_width) -> Vector{String}
+
+The lines the tree is about to occupy, clipped to the terminal and capped so the gutter
+can never leave the scroll region without a row to spare.
+"""
+function _gutter_lines(root::Progress, term_height::Int, term_width::Int)
+    text = render_tree(root; collapse = true, width = term_width)
+    isempty(text) && return String[]
+    lines = split(chomp(text), '\n')
+    length(lines) <= term_height - 1 || (lines = lines[1:(term_height - 1)])
+    return String[lines...]
+end
+
+# the gutter is written under the lock every other terminal write takes, so a concurrent
+# println from the user can never land in the middle of an escape sequence.
+function _write_gutter!(root::Progress, buffer::IOBuffer)
+    state = root.root
+    @lock state.lock begin
+        write(root.io, take!(buffer))
+        flush(root.io)
     end
-    ctx.last_render = now_sec
+    state.last_draw = time()
     return true
 end
 
 """
-    _erase_tty!(ctx)
+    _draw_tty!(root) -> Bool
 
-Erase the drawn block and leave the cursor exactly where the block started, so the
-terminal looks as though the bar was never there.  This is what the vanish timeout
-does when it runs out.
+Draw the tree into the gutter reserved at the bottom of the screen, behind a scroll
+region.
+
+Room is made by scrolling rather than by clearing: a new row is claimed by printing a
+newline at the bottom of the region the tree already sits in, which pushes the user's own
+output up into the scrollback instead of overwriting it with a bar that is about to
+appear there. Rows are only cleared once the tree has stopped needing them, since nothing
+else can want them back.
 """
-function _erase_tty!(ctx::ProgressContext)
-    @lock ctx.write_lock begin
-        rows = ctx.rendered_lines
-        if rows > 0
-            buffer = IOBuffer()
-            print(buffer, _cursor_up(rows))
-            for _ in 1:rows
-                print(buffer, _ERASE_LINE, "\n")
-            end
-            print(buffer, _cursor_up(rows))
-            write(ctx.io, take!(buffer))
-            flush(ctx.io)
-            ctx.rendered_lines = 0
+function _draw_tty!(root::Progress)
+    io = root.io
+    term_height, term_width = displaysize(io)
+    (term_height > 0 && term_width > 0) || return false
+
+    state    = root.root
+    previous = state.rows
+    lines    = _gutter_lines(root, term_height, term_width)
+    rows     = length(lines)
+    buffer   = IOBuffer()
+
+    if rows == 0
+        # nothing visible: hand the screen back, clearing the rows the tree was using and
+        # parking the cursor where they were, so later output starts there
+        if previous > 0
+            print(buffer, _at(term_height - previous + 1), "\e[J", "\e[r",
+                  _at(term_height - previous + 1))
+            state.rows = 0
         end
+        return _write_gutter!(root, buffer)
     end
-    return nothing
+
+    if rows > previous
+        bottom = previous == 0 ? term_height : term_height - previous
+        print(buffer, _at(bottom), repeat("\n", rows - previous))
+    end
+
+    scroll_bottom = max(1, term_height - rows)
+    print(buffer, "\e[1;", scroll_bottom, "r")
+    # clear from the top of whichever gutter was taller, so a shrinking tree leaves no
+    # stale rows behind it
+    print(buffer, _at(term_height - max(previous, rows) + 1), "\e[J")
+    print(buffer, _at(scroll_bottom + 1), join(lines, "\n"))
+    print(buffer, _at(scroll_bottom))
+
+    state.rows = rows
+    return _write_gutter!(root, buffer)
 end
 
 """
-    _draw_flat!(ctx; force = false) -> Bool
+    _release_gutter!(root; keep = true)
 
-Non-interactive output: append a flat line when the bar has crossed another
-flat_step percent, or when forced (which is how the final 100% line is written).
+Give the reserved rows back.
 
-Intercepted log records are written out once, in the same plain format used for the
-log_file sink, and then dropped: in a file there is nothing to redraw them over.
-Determinate bars emit at most 100 / flat_step lines, so a long loop does not flood
-a CI log.
+With `keep` the tree is drawn one last time and left on screen as ordinary text, with the
+cursor on a fresh line below it, so a finished run stays readable in the scrollback.
+Without it the rows are cleared, which is what a tree that has vanished wants.
 """
-function _draw_flat!(ctx::ProgressContext; force::Bool = false)
+function _release_gutter!(root::Progress; keep::Bool = true)
+    state    = root.root
+    previous = state.rows
+    previous == 0 && return nothing
+
+    io = root.io
+    term_height, term_width = displaysize(io)
+    buffer = IOBuffer()
+
+    if keep && term_height > 0
+        lines = _gutter_lines(root, term_height, term_width)
+        isempty(lines) ||
+            print(buffer, _at(max(1, term_height - length(lines) + 1)), join(lines, "\n"))
+    end
+    print(buffer, "\e[r")
+    if keep && term_height > 0
+        # start a fresh line under the tree that was left behind
+        print(buffer, _at(term_height), "\n")
+    else
+        print(buffer, _at(term_height - previous + 1), "\e[J")
+    end
+
+    state.rows = 0
+    return _write_gutter!(root, buffer)
+end
+
+# ---------------------------------------------------------------------------
+# flat output
+# ---------------------------------------------------------------------------
+
+"""
+    _should_emit_flat(node, percentage, force, now_sec) -> Bool
+
+Whether a node has earned another line of the non-interactive format: the first one, then
+one per flat_step percent, then the final 100%. An indeterminate node has no percentage
+to step through, so it emits a heartbeat once a second instead.
+"""
+function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec::Float64)
+    paint    = node.paint
+    previous = paint.flat_pct
+
+    force && return previous < 100
+    percentage < 0 && return previous < 0 || (now_sec - paint.last_flat) >= 1.0
+    previous < 0 && return true
+    percentage >= previous + node.opts.flat_step && return true
+    return _completed(node) && percentage >= 100 && previous < 100
+end
+
+"""
+    _draw_flat!(root; force = false) -> Bool
+
+Non-interactive output for a whole tree: append a flat line for every node that has
+crossed another flat_step percent, plus one per node when forced, which is how the final
+100% lines are written.
+
+Intercepted log records are written out once, in the same plain format the log_file sink
+uses, and then dropped: in a file there is nothing to redraw them over.
+"""
+function _draw_flat!(root::Progress; force::Bool = false)
     now_sec = time()
-    wrote = false
-    # the decision and the write share one lock: with a threaded renderer, the
-    # task and a finalising finish!() could otherwise both decide to emit.
-    @lock ctx.write_lock begin
-        buffer = IOBuffer()
-        for entry in pending_logs!(ctx, now_sec)
+    symbols = get(TREE_STRS, root.root.style, TREE_STRS[:round])
+    buffer  = IOBuffer()
+    wrote   = false
+
+    for row in _tree_rows(root, symbols, false, now_sec)
+        node = row.node
+        for entry in pending_logs!(node, now_sec)
             print(buffer, format_plain_log_line(entry), "\n")
             wrote = true
         end
-        percentage = flat_percentage(ctx)
-        if _should_emit_flat(ctx, percentage, force)
-            print(buffer, render_flat_line(ctx), "\n")
-            ctx.last_flat_pct = percentage
-            wrote = true
-        end
-        if wrote
-            write(ctx.io, take!(buffer))
-            flush(ctx.io)
-        end
+
+        percentage = flat_percentage(node)
+        _should_emit_flat(node, percentage, force, now_sec) || continue
+        node.paint.flat_pct  = percentage
+        node.paint.last_flat = now_sec
+        print(buffer, render_flat_line(node, row.depth), "\n")
+        wrote = true
     end
-    ctx.last_render = now_sec
-    return wrote
-end
 
-# flat-mode throttling.  Indeterminate bars have no percentage to step through, so
-# they emit a heartbeat once a second instead.
-function _should_emit_flat(ctx::ProgressContext, percentage::Int, force::Bool)
-    force && return ctx.last_flat_pct < 100
-    percentage < 0 && return (time() - ctx.last_render) >= 1.0
-    ctx.last_flat_pct < 0 && return true             # always announce a new bar
-    percentage >= ctx.last_flat_pct + ctx.flat_step && return true
-    return ctx.finished[] && percentage >= 100 && ctx.last_flat_pct < 100
-end
-
-"""
-    _refresh_timing!(ctx)
-
-Stamp the last-advance time, but only when the counter actually moved since the
-previous tick.
-
-This is what lets rate and ETA freeze while a bar waits on a nested job without
-costing anything in the hot loop: advancing a bar stays a single atomic add, and
-the timestamp is refreshed from the render tick, which already runs at 20 Hz.
-"""
-function _refresh_timing!(ctx::ProgressContext)
-    state = ctx.state
-    count = state.current[]
-    if count != ctx.last_count
-        ctx.last_count = count
-        state.last_update = time()
+    wrote || return false
+    state = root.root
+    @lock state.lock begin
+        write(root.io, take!(buffer))
+        flush(root.io)
     end
-    return nothing
+    state.last_draw = now_sec
+    return true
 end
 
-"""Draw one frame, in whichever mode the context is in."""
-function render_tick!(ctx::ProgressContext; force::Bool = false)
-    _refresh_timing!(ctx)
-    return ctx.tty ? _draw_tty!(ctx) : _draw_flat!(ctx; force = force)
+"""Draw one frame, in whichever mode the tree is in."""
+function render_tick!(root::Progress; force::Bool = false)
+    _refresh_timing!(root)
+    return root.opts.tty ? _draw_tty!(root) : _draw_flat!(root; force = force)
 end
 
 # ---------------------------------------------------------------------------
@@ -311,69 +318,102 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    start_render_task!(ctx; threaded = false) -> Task
+    start_render!(root; threaded = root.opts.threaded) -> Task
 
-Start the task that owns every write to the bar's output stream.
+Start the one task that owns the terminal for a whole tree.
 
-threaded = false (the default) keeps it on the current thread as an async task: it
-runs whenever the loop yields, which is exactly when terminal I/O is free, and it
-costs nothing at all while a tight loop is running.  threaded = true uses
-Threads.@spawn so the bar keeps animating even during a long, never-yielding
-computation; it is worth it only when such a loop is expected.
+threaded = false keeps it on the current thread as an async task: it runs whenever the
+computational loop yields, which is exactly when terminal I/O is free, and it costs
+nothing at all while a tight loop is running. threaded = true uses Threads.@spawn so the
+bar keeps animating even during a long, never-yielding computation; it is worth it only
+when such a loop is expected.
+
+A node never starts a task of its own. Children share the root's, which is a property of
+the RootState they all hold rather than a convention someone has to remember.
 """
-function start_render_task!(ctx::ProgressContext; threaded::Bool = false)
-    ctx.task === nothing || return ctx.task
-    ctx.running[] = true
-    ctx.task = threaded ? Threads.@spawn(_render_loop(ctx)) : (@async _render_loop(ctx))
-    return ctx.task
+function start_render!(root::Progress; threaded::Bool = root.opts.threaded)
+    state = root.root
+    state.task === nothing || return state.task
+    state.running[] = true
+    state.task = threaded ? Threads.@spawn(_render_loop(root)) : (@async _render_loop(root))
+    return state.task
 end
 
 """
-    _render_loop(ctx)
+    _at_rest(root) -> Bool
 
-The frame-rate-limited render loop.  It ticks at most 1 / ctx.dt times a second,
-and once the bar is finished it keeps drawing for another vanish seconds so the
-completed bar is readable, then erases it.
+Whether the render task can hand the terminal back.
+
+A flat tree is done as soon as every visible node has finished, since there is nothing to
+redraw. A gutter is done when it has released itself, or when everything still on screen
+has finished and none of it will ever time out: nothing left can change, so the tree is
+left where it is. A node still counting down a finite vanish timeout keeps the loop
+alive, because erasing it is the loop's job.
 """
-function _render_loop(ctx::ProgressContext)
+function _at_rest(root::Progress)
+    now_sec = time()
+    root.opts.tty || return _all_complete(root, now_sec)
+    root.root.rows == 0 && return true
+    return _all_complete(root, now_sec) && _all_forever(root, now_sec)
+end
+
+# every visible node, this one and its whole subtree, has finished
+function _all_complete(node::Progress, now_sec::Float64)
+    _visible(node, now_sec) || return true
+    _completed(node) || return false
+    return all(child -> _all_complete(child, now_sec), children(node))
+end
+
+# no visible node is waiting out a finite vanish timeout
+function _all_forever(node::Progress, now_sec::Float64)
+    _visible(node, now_sec) || return true
+    (_completed(node) && isinf(node.opts.vanish)) || return false
+    return all(child -> _all_forever(child, now_sec), children(node))
+end
+
+"""
+    _render_loop(root)
+
+The frame-rate-limited render loop. It ticks at most 1 / dt times a second and hands the
+terminal back as soon as there is nothing left that could change.
+"""
+function _render_loop(root::Progress)
     drew_final = false
     try
-        while ctx.running[]
-            if ctx.finished[]
-                # A finished bar never changes, so it is drawn once more and then
-                # left alone: redrawing it while it lingers would only scribble
-                # over whatever the caller printed in the meantime.
+        while root.root.running[]
+            if root.opts.tty
+                # the gutter is ours to redraw, and redrawing it is what erases a node
+                # whose vanish timeout has run out
+                render_tick!(root)
+            elseif _all_complete(root, time())
+                # a flat log is append-only, so the finished tree writes exactly one
+                # final line and then stops
                 if !drew_final
-                    render_tick!(ctx; force = true)
+                    render_tick!(root; force = true)
                     drew_final = true
                 end
             else
-                render_tick!(ctx)
+                render_tick!(root)
+                drew_final = false
             end
-            if ctx.finished[]
-                # flat output is append-only: there is nothing to linger for.
-                ctx.tty || break
-                # vanish = Inf means keep the finished bar on screen forever.
-                isinf(ctx.vanish) && break
-                (time() - ctx.state.finish[]) >= ctx.vanish && break
-            end
-            sleep(ctx.dt)
+            _at_rest(root) && break
+            sleep(root.opts.dt)
         end
     catch err
-        # rendering must never take the user's computation down with it, and it must
-        # not log through the user's logger (which may be capturing into this very
-        # context), so failures go straight to stderr.
+        # rendering must never take the user's computation down with it, and it must not
+        # log through the user's logger (which may be capturing into this very tree), so
+        # failures go straight to stderr.
         try
             print(stderr, "Progbiotic: render task stopped: ", sprint(showerror, err), "\n")
         catch
         end
     finally
         try
-            _finalize_render!(ctx)
+            _release_gutter!(root)
         catch
         end
         try
-            _close_log_sink!(ctx)
+            _close_log_sink!(root.root)
         catch
         end
     end
@@ -381,66 +421,74 @@ function _render_loop(ctx::ProgressContext)
 end
 
 """
-    _finalize_render!(ctx)
+    root_of(node) -> Progress
 
-Hand the terminal back.  A finished bar whose vanish timeout has elapsed is erased;
-anything else is left on screen, with the cursor already parked on the row below
-the block.
+The node at the top of a tree. The render task, the gutter and the log sink all belong to
+it, and a child reaches it by walking up.
 """
-function _finalize_render!(ctx::ProgressContext)
-    ctx.tty || return nothing
-    ctx.finished[] || return nothing
-    isinf(ctx.vanish) && return nothing
-    return _erase_tty!(ctx)
+function root_of(node::Progress)
+    while node.parent !== nothing
+        node = node.parent
+    end
+    return node
 end
 
 """
-    stop_render_task!(ctx; wait = true)
+    finish!(node::Progress; wait = !node.opts.tty)
 
-Ask the render task to stop and, by default, wait for it to finish its cleanup.
-Unlike finish! this does not wait for the vanish timeout: it is the "tear down now"
-path, used when a bar is abandoned rather than completed.
+Mark a node complete: clamp its counter to its total, stamp the finish time, draw the
+final frame, and let the render task linger for the vanish timeout before erasing it.
+
+`wait` blocks until the render task has handed the terminal back. It defaults to true for
+non-interactive output, where teardown is immediate and callers reasonably expect the
+final line to already be in the buffer, and to false for a terminal, where waiting would
+block for the whole vanish timeout for no reason.
 """
-function stop_render_task!(ctx::ProgressContext; wait::Bool = true)
-    ctx.running[] = false
-    task = ctx.task
-    (task !== nothing && wait) && _wait_quietly(task)
+function finish!(node::Progress; wait::Bool = !node.opts.tty)
+    top  = root_of(node)
+    task = top.root.task
+
+    if isfinished(node.state)
+        (wait && task !== nothing) && _wait_quietly(task)
+        task === nothing && _close_log_sink!(top.root)
+        return nothing
+    end
+
+    state = node.state
+    total = state.total
+    total !== nothing && (state.current[] = total)
+    state.last_update = time()
+    state.finish[] == 0 && (state.finish[] = time())
+    node.paint.completed_at == 0.0 && (node.paint.completed_at = time())
+
+    if task === nothing
+        # nothing is rendering this tree, so the final frame has to be drawn here
+        render_tick!(top; force = true)
+        _close_log_sink!(top.root)
+    elseif wait
+        _wait_quietly(task)
+    end
     return nothing
 end
 
 """
-    finish!(ctx::ProgressContext; wait = !ctx.tty)
+    stop_render!(node)
 
-Mark the bar complete: clamp the counter to the total, stamp the finish time, draw
-the final 100% frame synchronously, and let the render task linger for vanish
-seconds before erasing it.
-
-wait blocks until the render task has torn itself down.  It defaults to true for
-non-interactive output, where teardown is immediate and callers reasonably expect
-the final line to already be in the buffer, and to false for a terminal, where
-waiting would block for the whole vanish timeout for no reason.
+Ask the render task to stop and wait for it to hand the terminal back, leaving the tree on
+screen as ordinary text. Unlike finish! this does not wait out the vanish timeout: it is
+the "tear down now" path, used when a scope ends or a bar is abandoned.
 """
-function finish!(ctx::ProgressContext; wait::Bool = !ctx.tty)
-    if ctx.finished[]
-        (wait && ctx.task !== nothing) && _wait_quietly(ctx.task)
-        ctx.task === nothing && _close_log_sink!(ctx)
-        return nothing
-    end
-    state = ctx.state
-    state.total !== nothing && (state.current[] = state.total)
-    state.last_update = time()
-    state.finish[] == 0 && (state.finish[] = time())
-    ctx.finished[] = true
+function stop_render!(node::Progress)
+    top   = root_of(node)
+    state = top.root
+    state.running[] = false
+    task  = state.task
+    state.task = nothing
 
-    task = ctx.task
     if task === nothing
-        # nothing is rendering this bar, so the final frame has to be drawn here.
-        ctx.tty ? _draw_tty!(ctx) : _draw_flat!(ctx; force = true)
-        _close_log_sink!(ctx)
-    elseif wait
-        # the render task owns the terminal.  It draws the final frame, honours the
-        # vanish timeout and erases the block, all in one place, so finish! and the
-        # task can never both draw - or erase - the same block.
+        _release_gutter!(top)
+        _close_log_sink!(state)
+    else
         _wait_quietly(task)
     end
     return nothing

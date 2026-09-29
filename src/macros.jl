@@ -130,14 +130,20 @@ function _parse_progress_args(args)
     return res
 end
 
-# keyword arguments passed through to `add_job!` / `_statement_job` when set.
+# the glyph and width keywords, forwarded to the node constructor when set.
 function _extract_extra_kws(opts)
     kws = Any[]
-    for key in (:vanish, :vanish_timeout, :spinner, :barunits, :empty, :caps, :head, :width)
+    for key in (:spinner, :barunits, :empty, :caps, :head, :width)
         opts[key] !== nothing && push!(kws, Expr(:kw, key, opts[key]))
     end
     return kws
 end
+
+# the vanish pair, always passed explicitly even when the level set neither. The two
+# constructors read its absence differently: a root keeps its own bar for the whole scope
+# while a child takes the tree's child default.
+_vanish_kws(opts) = Any[Expr(:kw, :vanish, opts[:vanish]),
+                        Expr(:kw, :vanish_timeout, opts[:vanish_timeout])]
 
 _contains_for(e) =
     e isa Expr && (e.head == :for ||
@@ -193,25 +199,25 @@ function _rewrap_loop(for_expr, wrappers)
 end
 
 """
-    _build_loop_expr(var, iter_sym, new_body, pbar_sym, job_sym, wrappers)
+    _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
 
 Constructs the iteration loop that updates `job_sym` after every iteration of the
 transformed body, so the progress start and completion are still reported
 correctly. The loop may be re-wrapped by the caller's macros (e.g.
 `Threads.@threads`, `Base.@sync`), which is how multithreading is expressed.
 """
-function _build_loop_expr(var, iter_sym, new_body, pbar_sym, job_sym, wrappers)
+function _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
     loop = :(
         for $var in $iter_sym
             $new_body
-            Progbiotic.update!($pbar_sym, $job_sym)
+            Progbiotic.next!($job_sym)
         end
     )
     return _rewrap_loop(loop, wrappers)
 end
 
 """
-    _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
+    _build_level_block(parent, job_sym, opts, body_expr;
                        is_loop, iter_sym=nothing, iter=nothing,
                        milestone_count=0, thread_ctx=nothing)
 
@@ -227,70 +233,80 @@ A loop job's total is inferred from its iterable; a block job's total is
 contains — and, when positive, the job is marked as a milestone container whose
 state tracks how many milestones have completed.
 """
-function _build_level_block(pbar_sym, job_sym, opts, parent_job_sym, body_expr;
+function _build_level_block(parent, job_sym, opts, body_expr;
                             is_loop::Bool = false,
                             iter_sym::Union{Symbol, Nothing} = nothing,
                             iter = nothing,
                             milestone_count::Int = 0,
                             thread_ctx::Union{Symbol, Nothing} = nothing)
-    bind_assignment = opts[:bind] !== nothing ?
-        :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
-    extra_kws = _extract_extra_kws(opts)
-    # A log_file given at this level attaches (or re-attaches) the persistent sink.
-    sink_call = opts[:log_file] === nothing ? :() :
-        :(Progbiotic._ensure_log_sink!($pbar_sym, $(opts[:log_file])))
+    total = is_loop ? :(Progbiotic.infer_total($iter_sym)) : max(1, milestone_count)
+    kind  = is_loop || milestone_count == 0 ? :bar : :container
+
+    node_kws = Any[Expr(:kw, :desc, opts[:desc]),
+                   Expr(:kw, :theme, opts[:theme]),
+                   Expr(:kw, :kind, QuoteNode(kind)),
+                   _vanish_kws(opts)...,
+                   _extract_extra_kws(opts)...]
 
     saved_ctx = gensym("saved_ctx")
-    rebind_ctx = thread_ctx === nothing ? :() : :($thread_ctx = Progbiotic.ProgContext($pbar_sym, $job_sym))
+    bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
+    rebind_ctx = thread_ctx === nothing ? :() : :($thread_ctx = $job_sym)
     restore_ctx = thread_ctx === nothing ? :() : :($thread_ctx = $saved_ctx)
+    # a log_file given at this level attaches (or re-attaches) the tree's sink: a sink
+    # belongs to the whole scope, so it is the root's however deep the level that asked
+    sink_call = opts[:log_file] === nothing ? :() :
+        :(Progbiotic._ensure_log_sink!($job_sym, $(opts[:log_file])))
 
-    if is_loop
-        job_call = :($job_sym = Progbiotic.add_job!($pbar_sym, $iter_sym;
-                          parent = $parent_job_sym, desc = $(opts[:desc]),
-                          theme = $(opts[:theme]), $(extra_kws...)))
-        bindings = [:($saved_ctx = $(thread_ctx === nothing ? nothing : thread_ctx)),
-                    :($iter_sym = $(iter))]
-        completion = :(if $job_sym.total !== nothing && $job_sym.state < $job_sym.total
-                           Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)
-                       end)
-        mark = :()
-    else
-        total = max(1, milestone_count)
-        job_call = :($job_sym = Progbiotic.add_job!($pbar_sym, $(opts[:desc]);
-                          parent = $parent_job_sym, theme = $(opts[:theme]),
-                          total = $total, $(extra_kws...)))
-        bindings = [:($saved_ctx = $(thread_ctx === nothing ? nothing : thread_ctx))]
-        completion = :(if $job_sym.state < $job_sym.total
-                           Progbiotic.update!($pbar_sym, $job_sym, $job_sym.total)
-                       end)
-        mark = milestone_count > 0 ? :(Progbiotic._mark_container!($pbar_sym, $job_sym)) : :()
-    end
+    bindings = Any[:($saved_ctx = $(thread_ctx === nothing ? nothing : thread_ctx))]
 
-    # the level's body runs with a logger that captures log records into this
-    # level's job. Nested levels install their own logger, which shadows this one,
-    # so log calls always resolve to the innermost active context.
-    log_context = :(Progbiotic.ProgContext($pbar_sym, $job_sym))
-    capture_expr = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
-    logged_body = :(Progbiotic._with_log_capture($log_context, $capture_expr) do
-        $body_expr
-    end)
+    completion = :(if Progbiotic.pbtotal($job_sym) !== nothing &&
+                      Progbiotic.pbdone($job_sym) < Progbiotic.pbtotal($job_sym)
+                       Progbiotic.update!($job_sym, Progbiotic.pbtotal($job_sym))
+                   end)
 
-    return quote
+    # the level's body runs with a logger that captures log records into this level's
+    # node. Nested levels install their own logger, which shadows this one, so log calls
+    # always resolve to the innermost active node.
+    capture = opts[:capture_logs] === nothing ? true : opts[:capture_logs]
+    body = quote
         let $(bindings...)
-            $job_call
-            $mark
             $sink_call
-            $bind_assignment
+            $bind
             $rebind_ctx
             try
-                $logged_body
+                Progbiotic._with_log_capture($job_sym, $capture) do
+                    $body_expr
+                end
             finally
                 $restore_ctx
-                Progbiotic._complete_statement_jobs!($pbar_sym, $job_sym)
+                Progbiotic._complete_statement_jobs!($job_sym)
                 $completion
             end
         end
     end
+
+    block = if parent !== nothing
+        quote
+            $job_sym = Progbiotic.child($parent, $total; $(node_kws...))
+            $body
+        end
+    else
+        # the outermost level *is* the tree, so building its node starts the render task
+        # and running the body under it hands the terminal back when the scope ends
+        root = :(Progbiotic._root_bar($total, $(opts[:title]), $(opts[:final_depth]),
+                                      $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
+        quote
+            Progbiotic._with_root($root) do $job_sym
+                $body
+            end
+        end
+    end
+
+    # the loop's iterable is named once, outside everything that reads it: the node's
+    # total is inferred from it before the node exists
+    return is_loop ? :(let $iter_sym = $iter
+                           $block
+                       end) : block
 end
 
 # counts the direct `@progress "desc"` statement invocations in a begin/end block
@@ -316,7 +332,7 @@ function _count_milestones(body_expr)
 end
 
 """
-    _build_progress_level(m_args, pbar_sym, parent_job_sym, parent_opts, thread_ctx) -> (block, opts)
+    _build_progress_level(m_args, parent, parent_opts, thread_ctx) -> (block, opts)
 
 Parses one `@progress` invocation's arguments and builds the code for its level:
 form detection (loop / block / statement), option parsing, vanish inheritance from
@@ -324,7 +340,7 @@ the enclosing level, `with=<ctx>` threading, and the context save/rebind/restore
 wrapping. Returns the generated block together with the parsed options (so the
 caller can inspect e.g. `opts[:with]` or `opts[:title]`).
 """
-function _build_progress_level(m_args, pbar_sym, parent_job_sym,
+function _build_progress_level(m_args, parent,
                                parent_opts::Union{Dict{Symbol, Any}, Nothing},
                                thread_ctx::Union{Symbol, Nothing})
     body_expr = m_args[end]
@@ -354,52 +370,50 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
         end
     end
 
-    # `with=<ctx>` threads an existing context: register under ctx.pbar/ctx.parent
-    # and carry `ctx` (if a symbol) down to nested levels.
+    # `with=<ctx>` threads an existing bar: register under it, and carry it (if a symbol)
+    # down to nested levels.
     if opts[:with] !== nothing
         ctxv = gensym("with_ctx")
-        level_pbar   = :($ctxv.pbar)
-        level_parent = :($ctxv.parent)
+        level_parent = ctxv
         # the `with=` context is an existing value: rebind it around this level.
         carried      = opts[:with] isa Symbol ? opts[:with] : thread_ctx
         block_thread = carried
     else
         ctxv = nothing
-        level_pbar   = pbar_sym
-        level_parent = parent_job_sym
+        level_parent = parent
         # the inherited context tracks this level (restored afterwards); a level's
-        # own `bind` is a fresh assignment handled by the bind_assignment instead.
+        # own `bind` is a fresh assignment instead.
         carried      = opts[:bind] isa Symbol ? opts[:bind] : thread_ctx
         block_thread = thread_ctx
     end
 
     block = if is_loop
-        job_sym  = gensym("child_job")
-        iter_sym = gensym("child_iter")
-        new_body = _transform_progress_ast(body, level_pbar, job_sym, opts, carried)
-        loop_expr = _build_loop_expr(var, iter_sym, new_body, level_pbar, job_sym, wrappers)
-        _build_level_block(level_pbar, job_sym, opts, level_parent, loop_expr;
+        job_sym   = gensym("child_job")
+        iter_sym  = gensym("child_iter")
+        new_body  = _transform_progress_ast(body, job_sym, opts, carried)
+        loop_expr = _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
+        _build_level_block(level_parent, job_sym, opts, loop_expr;
                            is_loop = true, iter_sym = iter_sym, iter = iter,
                            thread_ctx = block_thread)
     elseif is_block
-        # `@progress "desc" begin ... end`: register a block job and run the
+        # `@progress "desc" begin ... end`: register a block node and run the
         # (transformed) block body under it.
-        job_sym   = gensym("child_job")
-        new_body  = _transform_progress_ast(body_expr, level_pbar, job_sym, opts, carried)
-        _build_level_block(level_pbar, job_sym, opts, level_parent, new_body;
+        job_sym  = gensym("child_job")
+        new_body = _transform_progress_ast(body_expr, job_sym, opts, carried)
+        _build_level_block(level_parent, job_sym, opts, new_body;
                            milestone_count = _count_milestones(body_expr),
                            thread_ctx = block_thread)
     else
         # `@progress "desc"` statement: register a named subtask (milestone) under
-        # the enclosing job.
+        # the enclosing node.
         job_sym = gensym("stmt_job")
-        _build_statement_block(level_pbar, job_sym, opts, level_parent)
+        _build_statement_block(level_parent, job_sym, opts)
     end
 
     if opts[:with] !== nothing
         # evaluate the context once, check it, and run the level's code against it.
-        guard = :($ctxv isa Progbiotic.ProgContext ||
-                  error("@progress: `with=` expects a ProgContext (e.g. one bound by the caller's @progress), got ", repr($ctxv)))
+        guard = :($ctxv isa Progbiotic.Progress ||
+                  error("@progress: `with=` expects a bar, e.g. one bound by the caller's @progress; got ", repr($ctxv)))
         block = quote
             let $ctxv = $(opts[:with])
                 $guard
@@ -411,28 +425,40 @@ function _build_progress_level(m_args, pbar_sym, parent_job_sym,
 end
 
 """
-    _build_statement_block(pbar_sym, job_sym, opts, parent_job_sym)
+    _build_statement_block(parent, job_sym, opts)
 
 Builds the code for a `@progress "desc"` statement with no loop or block body: it
-registers a named subtask (milestone) under `parent_job_sym` and optionally binds a
-context. Milestones have no total and are kept on screen by `final_depth` (see
-`is_job_visible`), or vanish like any other finished bar otherwise.
+registers a named subtask (milestone) under `parent` and optionally binds it. A milestone
+has no total of its own, and is kept on screen by `final_depth` or vanishes like any other
+finished bar otherwise.
 """
-function _build_statement_block(pbar_sym, job_sym, opts, parent_job_sym)
-    bind_assignment = opts[:bind] !== nothing ?
-        :($(opts[:bind]) = Progbiotic.ProgContext($pbar_sym, $job_sym)) : :()
-    stmt_kws = Any[]
-    for key in (:spinner, :barunits, :empty, :caps, :head, :width, :vanish, :vanish_timeout)
-        opts[key] !== nothing && push!(stmt_kws, Expr(:kw, key, opts[key]))
-    end
+function _build_statement_block(parent, job_sym, opts)
+    node_kws = Any[Expr(:kw, :desc, opts[:desc]),
+                   Expr(:kw, :theme, opts[:theme]),
+                   Expr(:kw, :kind, QuoteNode(:milestone)),
+                   _vanish_kws(opts)...,
+                   _extract_extra_kws(opts)...]
+
+    bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
     sink_call = opts[:log_file] === nothing ? :() :
-        :(Progbiotic._ensure_log_sink!($pbar_sym, $(opts[:log_file])))
+        :(Progbiotic._ensure_log_sink!($job_sym, $(opts[:log_file])))
+
+    if parent !== nothing
+        return quote
+            $job_sym = Progbiotic.child($parent, nothing; $(node_kws...))
+            $sink_call
+            $bind
+        end
+    end
+
+    # a bare `@progress "desc"` with no enclosing scope is a tree of one milestone
+    root = :(Progbiotic._root_bar(nothing, $(opts[:title]), $(opts[:final_depth]),
+                                  $(opts[:log_file]), $(opts[:io]); $(node_kws...)))
     return quote
-        $job_sym = Progbiotic._statement_job($pbar_sym, $parent_job_sym;
-                                             desc = $(opts[:desc]), theme = $(opts[:theme]),
-                                             $(stmt_kws...))
-        $sink_call
-        $bind_assignment
+        Progbiotic._with_root($root) do $job_sym
+            $sink_call
+            $bind
+        end
     end
 end
 
@@ -441,15 +467,15 @@ Recursively transforms the AST, linking nested `@progress` invocations to parent
 and carrying the context variable (`thread_ctx`) so contexts automatically track
 the innermost job.
 """
-function _transform_progress_ast(expr, pbar_sym, parent_job_sym, parent_opts::Dict{Symbol, Any},
+function _transform_progress_ast(expr, parent, parent_opts::Dict{Symbol, Any},
                                  thread_ctx::Union{Symbol, Nothing} = nothing)
     if _is_macrocall_progress(expr)
         m_args = _extract_macrocall_args(expr)
         isempty(m_args) && return expr
-        block, _ = _build_progress_level(m_args, pbar_sym, parent_job_sym, parent_opts, thread_ctx)
+        block, _ = _build_progress_level(m_args, parent, parent_opts, thread_ctx)
         return block
     elseif expr isa Expr
-        return Expr(expr.head, map(arg -> _transform_progress_ast(arg, pbar_sym, parent_job_sym, parent_opts, thread_ctx), expr.args)...)
+        return Expr(expr.head, map(arg -> _transform_progress_ast(arg, parent, parent_opts, thread_ctx), expr.args)...)
     else
         return expr
     end
@@ -632,34 +658,39 @@ and so on):
 macro progress(args...)
     isempty(args) && error("@progress requires a loop, a block, or a description")
 
-    pbar_sym = gensym("pbar")
-    block, opts = _build_progress_level(args, pbar_sym, nothing, nothing, nothing)
-
-    if opts[:with] !== nothing
-        # `with=<ctx>`: thread an existing context — no new ProgBar or gutter.
-        return esc(block)
-    end
-
-    transformed = quote
-        $pbar_sym = Progbiotic._root_progbar($(opts[:title]), $(opts[:final_depth]),
-                                            $(opts[:log_file]), $(opts[:io]))
-        Progbiotic.with_tree_gutter($pbar_sym) do
-            $block
-        end
-    end
-
-    return esc(transformed)
+    block, _ = _build_progress_level(args, nothing, nothing, nothing)
+    return esc(block)
 end
 
 """
-    _root_progbar(title, final_depth, log_file, io) -> ProgBar
+    _root_bar(total, title, final_depth, log_file, io; kwargs...) -> Progress
 
-Build the ProgBar that roots a @progress tree.  `io` and `log_file` are optional, so
-they are only forwarded when actually given; this keeps the generated code free of
-conditionals and lets the macro stay a pure AST transformation.
+Build the node that roots a @progress tree. `io` and `log_file` are optional, so they are
+only forwarded when actually given; this keeps the generated code free of conditionals and
+lets the macro stay a pure AST transformation.
+
+The root's own vanish defaults to nothing, which keeps the tree on screen for the whole
+scope, while `child_vanish = 0.5` is what its children get when they ask for none of their
+own.
 """
-_root_progbar(title, final_depth, log_file, io) =
-    io === nothing ?
-        ProgBar(title; vanish_timeout = 0.5, final_depth = final_depth, log_file = log_file) :
-        ProgBar(title; vanish_timeout = 0.5, final_depth = final_depth,
-                log_file = log_file, io = io)
+function _root_bar(total, title, final_depth, log_file, io;
+                   vanish = nothing, vanish_timeout = nothing, kwargs...)
+    return Progress(total; title = title, final_depth = final_depth, child_vanish = 0.5,
+                    vanish = vanish, vanish_timeout = vanish_timeout,
+                    log_file = log_file, io = io === nothing ? stdout : io, kwargs...)
+end
+
+"""
+    _with_root(f, bar::Progress)
+
+Start the render task for a freshly built root, run f(bar) with it, and hand the terminal
+back when f returns or throws. A @progress scope is exactly this call.
+"""
+function _with_root(f::Function, bar::Progress)
+    start_render!(bar)
+    try
+        return f(bar)
+    finally
+        stop_render!(bar)
+    end
+end

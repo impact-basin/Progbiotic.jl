@@ -9,6 +9,41 @@
 # instead of dispatching through Vector{AbstractColumn} on every frame.
 
 # ---------------------------------------------------------------------------
+# the column interface
+# ---------------------------------------------------------------------------
+
+"""
+    AbstractColumn
+
+Supertype of every progress-bar column.
+
+A column is a small, stateless value that knows how to turn a BarState into one string.
+Columns are composed into a tuple (a *layout*) and joined with single spaces by the
+renderer, so a layout reads left-to-right like the bar it draws:
+
+    layout = (Spinner(:dots), Tag("{desc}"), Bar(), Percent(), Count(), Rate("it/s"), Eta())
+
+Implementations must define
+
+    render_column(col::MyColumn, state::BarState) -> String
+
+Columns must be cheap to render (the engine calls them up to fps times a second) and must
+never block: they only read the atomic progress state.
+"""
+abstract type AbstractColumn end
+
+"""
+    render_column(col::AbstractColumn, state::BarState) -> String
+
+Render one column of a progress line. This is the extension point for custom columns:
+subtype AbstractColumn and add a method.
+
+Returning an empty string is allowed and means "this column contributes nothing right
+now"; the renderer drops empty columns along with the whitespace around them.
+"""
+function render_column end
+
+# ---------------------------------------------------------------------------
 # shared formatting
 # ---------------------------------------------------------------------------
 
@@ -127,9 +162,11 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    Tag(template::String = "{desc}") -> Tag
+    Tag(template::String = "{desc}"; width = 0, bold = false) -> Tag
 
-A static or interpolated label. Placeholders:
+A static or interpolated label, optionally padded to a width and bolded. A tree's
+layout pads it to its widest visible label, which is what lines the bars up down the
+rows. Placeholders:
 
     {desc}      the bar's description
     {n}         completed units
@@ -143,15 +180,20 @@ Unknown placeholders are left alone, so a template with literal braces still wor
 struct Tag <: AbstractColumn
     template :: String
     width    :: Int
+    bold     :: Bool
 end
 
-Tag(template::AbstractString; width::Int = 0) = Tag(String(template), max(0, width))
-Tag(; template::AbstractString = "{desc}", width::Int = 0) = Tag(String(template), max(0, width))
-
+Tag(template::AbstractString; width::Int = 0, bold::Bool = false) =
+    Tag(String(template), max(0, width), bold)
+Tag(; template::AbstractString = "{desc}", width::Int = 0, bold::Bool = false) =
+    Tag(String(template), max(0, width), bold)
 
 function render_column(col::Tag, state::BarState)
     text = strip(_interpolate(col.template, state))
-    return col.width == 0 ? text : rpad(text, col.width)
+    col.width == 0 || (text = rpad(text, col.width))
+    # bold is off unless asked for: an unstyled column emits no escape sequences at all,
+    # and it is the theme's layout that turns it on for a description.
+    return col.bold ? string(_ANSI_BOLD, text, _ANSI_RESET) : text
 end
 
 function _interpolate(template::AbstractString, state::BarState)
@@ -278,35 +320,44 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    Percent(digits::Int = 1) -> Percent
+    Percent(digits::Int = 1; pad = 0) -> Percent
 
-The completion percentage, e.g. "45.2%". Renders nothing for an indeterminate bar,
-where a percentage would be a lie.
+The completion percentage, e.g. "45.2%", left-padded to `pad` columns so a field that
+crosses 9% to 10% does not shuffle what is to its right. Renders nothing for an
+indeterminate bar, where a percentage would be a lie.
 """
 struct Percent <: AbstractColumn
     digits :: Int
+    pad    :: Int
 end
 
-Percent(; digits::Int = 1) = Percent(max(0, digits))
+Percent(digits::Integer; pad::Integer = 0) = Percent(Int(digits), max(0, Int(pad)))
+Percent(; digits::Integer = 1, pad::Integer = 0) = Percent(Int(digits), max(0, Int(pad)))
 
 function render_column(col::Percent, state::BarState)
     text = _percent_text(state, col.digits)
     isempty(text) && return ""
-    return string(text, "%")
+    # a pad stops the field jittering as it crosses 9% to 10%
+    return string(lpad(text, col.pad), "%")
 end
 
 """
     Count() -> Count
 
-Completed and total units, e.g. "(42/100)". Renders nothing for an indeterminate bar,
-which has no total to compare against.
+Completed and total units, e.g. "(42/100)", with the completed count padded to the
+width of the total so the field does not shuffle. An indeterminate bar has no total to
+compare against, so it reports "1 unit" instead: it stands for one piece of work.
 """
 struct Count <: AbstractColumn end
 
 function render_column(::Count, state::BarState)
+    done  = pbdone(state)
     total = pbtotal(state)
-    total === nothing && return ""
-    return string("(", pbdone(state), "/", total, ")")
+    # no total: an indeterminate node stands for one unit of work, and saying so beats
+    # an empty field
+    total === nothing && return string(max(done, 1), max(done, 1) == 1 ? " unit" : " units")
+    # the count is padded to the total's width so "( 4/10)" does not shuffle
+    return string("(", lpad(done, ndigits(total)), "/", total, ")")
 end
 
 # ---------------------------------------------------------------------------
@@ -314,33 +365,56 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    Rate(unit::String = "it/s") -> Rate
+    Rate(unit::String = "it/s"; pad = 10) -> Rate
 
 Throughput, measured over elapsed *work* time so it freezes while a bar waits on
 something else. Below one item per second it switches to seconds per item, which is
 what you actually want to see for slow work.
+
+Rendered in brackets and right-padded to `pad` columns, so the times further right line
+up down a tree; a rate of zero renders nothing at all rather than a zero.
 """
 struct Rate <: AbstractColumn
     unit :: String
+    pad  :: Int
 end
 
-Rate(; unit::AbstractString = "it/s") = Rate(String(unit))
+Rate(unit::AbstractString; pad::Integer = 10) = Rate(String(unit), max(0, Int(pad)))
+Rate(; unit::AbstractString = "it/s", pad::Integer = 10) = Rate(String(unit), max(0, Int(pad)))
 
-render_column(col::Rate, state::BarState) = _format_rate(pbrate(state), col.unit)
+function render_column(col::Rate, state::BarState)
+    text = _format_rate(pbrate(state), col.unit)
+    isempty(text) && return ""
+    # bracketed and padded, so the times to the right of it line up down the tree
+    return string("[", rpad(text, col.pad), "]")
+end
 
 """
     Eta() -> Eta
 
-Estimated time remaining as HH:MM:SS, extrapolated from the average rate so far.
-Renders nothing until enough progress has been made to extrapolate.
+The time column, in whichever of the three states a node is in: "ETA: 1.2s"
+extrapolated from the average rate so far, "done in 1.2s" once it has finished, and
+"(elapsed: 1.2s)" for an indeterminate node, which has no end to count down to.
+Durations carry sub-second precision rather than an HH:MM:SS that reads 00:00:00.
 """
 struct Eta <: AbstractColumn end
 
 function render_column(::Eta, state::BarState)
+    total = pbtotal(state)
+    # the time column, in all three of the states a node can be in
+    if total === nothing
+        isfinished(state) && return string("done in ", _duration(state))
+        return string("(elapsed: ", _duration(state), ")")
+    end
+    pbdone(state) >= total && return string("done in ", _duration(state))
+
     eta = pbeta(state)
-    eta === nothing && return ""
-    return string("ETA ", _format_hms(eta))
+    eta === nothing && return "ETA: N/A"
+    return string("ETA: ", duration_str(eta; show_ms = true))
 end
+
+# wall-clock time with sub-second precision: elapsed while running, frozen at completion
+_duration(state::BarState) = duration_str(pbruntime(state); show_ms = true)
 
 # ---------------------------------------------------------------------------
 # Postfix
@@ -370,19 +444,23 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    theme_layout(t::Theme) -> Tuple
+    theme_layout(t::Theme; desc_width = 0, width = 30) -> Tuple
 
 The column layout a theme describes.
 
 A theme is applied by *building* columns, not by columns consulting it: styling is
 fixed when the bar is constructed, `render_column` stays a pure function of the state,
 and a custom column needs no plumbing to be styled.
+
+`desc_width` is the width the label is padded to, which a tree measures from its widest
+visible node so the columns line up down the rows. `width` is the bar width, which the
+engine measures from what the rest of the line leaves.
 """
-theme_layout(t::Theme; desc_width::Int = 0) = (
+theme_layout(t::Theme; desc_width::Int = 0, width::Int = _BAR_WIDTH) = (
     Spinner(t.spinner; palette = t.palette),
-    Tag("{desc}"; width = desc_width),
-    Bar(t.barunits, t.empty, t.palette, t.caps, t.head),
-    Percent(),
+    Tag("{desc}"; width = desc_width, bold = true),
+    Bar(t.barunits, t.empty, t.palette, t.caps, t.head; width = width),
+    Percent(digits = 0, pad = 3),
     Count(),
     Rate("it/s"),
     Eta(),
