@@ -315,9 +315,14 @@ const _FLAT_SKIP = (Spinner, Tag, Bar, Percent, Count, Postfix)
 
 One line of the non-interactive format, e.g.
 
-    [INFO] Parsing Records 25% (250/1000) 412.5 it/s ETA: 1.2ms [loss=0.041]
+    [INFO] Parsing Records  25% (250/1000) [412.5 it/s] ETA: 730.3ms [loss=0.041]
 
 Not an escape sequence anywhere: this is output you grep.
+
+The columns that carry information here are rendered by their own definitions, padding
+and all. A rate is padded to line the times up down a tree, and a flat log has one line
+per node, so the padding is inert rather than wrong; giving the flat mode its own
+rendering of a column would be a second thing to keep in step.
 """
 function render_flat_line(node::Progress, depth::Int = 0)
     state  = node.state

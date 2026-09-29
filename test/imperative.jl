@@ -146,6 +146,34 @@ end
         @test length(findall("[loss=0.041]", line)) == 1
     end
 
+    @testset "the forced flat pass does not repeat a line" begin
+        node = Progress(nothing; desc = "milestone", io = IOBuffer(), tty = false,
+                        vanish = 0.0, start = false)
+        now = time()
+
+        # announced while it was still running
+        @test Progbiotic._should_emit_flat(node, -1, false, now)
+        node.paint.flat_pct  = -1
+        node.paint.last_flat = now
+        node.paint.flat_done = false
+
+        # the final pass has something new to say: it has finished since. The state is
+        # set directly because finish! draws the final frame itself, which is the very
+        # thing under test here.
+        node.state.finish[] = time()
+        @test Progbiotic._should_emit_flat(node, -1, true, now)
+
+        # and once that line is on the log, it does not say it again. Without this the
+        # forced pass wrote an identical line for every indeterminate node.
+        node.paint.flat_done = true
+        @test !Progbiotic._should_emit_flat(node, -1, true, now)
+
+        # a node that has never been announced still gets its one line
+        fresh = Progress(nothing; desc = "fresh", io = IOBuffer(), tty = false,
+                         vanish = 0.0, start = false)
+        @test Progbiotic._should_emit_flat(fresh, -1, true, now)
+    end
+
     @testset "the gutter is drawn, then erased or left behind" begin
         buffer = IOBuffer()
         bar = Progress(10; desc = "tty", io = buffer, tty = true, fps = 100.0, vanish = 0.0)

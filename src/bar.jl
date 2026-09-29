@@ -242,21 +242,27 @@ LogBuf() = LogBuf(LogEntry[], ReentrantLock())
 """
     Paint()
 
-Renderer bookkeeping for one node: the counter value seen at the previous tick, the
-last percentage announced in flat mode and when, and when the node reached its total.
+Renderer bookkeeping for one node: the counter value seen at the previous tick, the last
+percentage announced in flat mode and when, whether that announcement already said the
+node had finished, and when the node reached its total.
 
 `completed_at` is separate from `BarState.finish` because a child that reaches its
 total by being advanced never calls `finish!`; the render tick is what notices, and
 the vanish timeout is measured from there.
+
+`flat_done` is what stops the append-only renderer repeating itself. A node's last
+percentage cannot say whether its line already read "done in ...", because an
+indeterminate node's percentage is -1 the whole way through.
 """
 mutable struct Paint
     count        :: Int
     flat_pct     :: Int
     last_flat    :: Float64
+    flat_done    :: Bool
     completed_at :: Float64
 end
 
-Paint() = Paint(0, -1, 0.0, 0.0)
+Paint() = Paint(0, -1, 0.0, false, 0.0)
 
 """
     RootState(; title = "", final_depth = 0, child_vanish = 1.0, sink = nothing,

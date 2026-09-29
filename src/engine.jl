@@ -258,7 +258,10 @@ function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec
     paint    = node.paint
     previous = paint.flat_pct
 
-    force && return previous < 100
+    # the forced pass writes the final state, which earns a line only if it is not the one
+    # already written: a determinate node climbs to 100, and an indeterminate one stops
+    # reading "elapsed" and starts reading "done in"
+    force && return previous < 100 && !paint.flat_done
     # last_flat is stamped only when a line is actually written, so it is what tells a
     # node that has never announced itself from one that is indeterminate and sitting at
     # -1 for the whole run
@@ -300,6 +303,7 @@ function _draw_flat!(root::Progress; force::Bool = false)
         _should_emit_flat(node, percentage, force, now_sec) || continue
         node.paint.flat_pct  = percentage
         node.paint.last_flat = now_sec
+        node.paint.flat_done = _completed(node)
         print(buffer, render_flat_line(node, row.depth), "\n")
         wrote = true
     end
