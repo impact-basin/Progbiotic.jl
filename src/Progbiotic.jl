@@ -1,13 +1,8 @@
 module Progbiotic
 
-using Dates
 using Colors
-using MacroTools: @capture, postwalk
+using MacroTools: @capture
 import Logging   # stdlib: log interception for @progress scopes
-
-include("tree.jl")
-export print_tree
-export with_tree_gutter
 
 include("look.jl")
 export Theme
@@ -59,6 +54,7 @@ export add_job!
 export get_children
 export render_progbar_tree
 export print_progbar_in_gutter
+export with_tree_gutter
 
 include("render.jl")
 export stop_gutter!
@@ -90,7 +86,6 @@ export withprogress
 
 include("macro.jl")
 export @progress
-export @showtree
 
 function __init__()
     # Wrap the process-wide logger so bare prog/Progress loops intercept logs the

@@ -1,0 +1,19 @@
+name = "ShowTree"
+uuid = "24f8ca53-406d-409b-9d20-e836dc385c8a"
+version = "0.1.0"
+authors = ["Henry Eshbaugh <henry.eshbaugh@physics.ox.ac.uk>"]
+
+[deps]
+MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
+StyledStrings = "f489334b-da3d-4c2e-b8f0-e476e12c162b"
+
+[compat]
+MacroTools = "0.5.16"
+StyledStrings = "1.11"
+julia = "1.13"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

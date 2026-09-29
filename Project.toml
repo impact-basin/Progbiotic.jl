@@ -3,21 +3,16 @@ uuid = "fd93e9f9-5ff4-4e8b-9dd3-c466c8f67570"
 version = "0.10.0"
 authors = ["Henry Eshbaugh <henry.eshbaugh@physics.ox.ac.uk>"]
 
-[workspace]
-projects = ["docs"]
-
 [deps]
 Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
-Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
 Logging = "56ddb016-857b-54e1-b83d-db4d58db5568"
 MacroTools = "1914dd2f-81c6-5fcd-8719-6d5c9610ff09"
 
 [compat]
 Colors = "0.13.1"
-Dates = "1.10.0"
 Logging = "1"
 MacroTools = "0.5.16"
-julia = "1.10"
+julia = "1.13"
 
 [extras]
 ProgressLogging = "33c8b6b6-d38a-422a-b730-caa89a2f386c"

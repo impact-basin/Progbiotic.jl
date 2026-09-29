@@ -1,3 +1,22 @@
+# branch glyphs for the tree renderer, keyed by role
+const TREE_STRS = Dict(
+    :square => Dict(
+        :nada => "   ",
+        :root => "┬  ",
+        :line => "│  ",
+        :leaf => "├─ ",
+        :term => "└─ ",
+    ),
+
+    :round => Dict(
+        :nada => "   ",
+        :root => "┬  ",
+        :line => "│  ",
+        :leaf => "├─ ",
+        :term => "╰─ ",
+    ),
+)
+
 """
     Theme(name, palette, barunits, empty, spinner[, caps, head])
 
