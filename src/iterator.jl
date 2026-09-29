@@ -196,6 +196,11 @@ set_postfix!(it::ProgbioticIterator; kwargs...) = set_postfix!(it.bar; kwargs...
 """Finish a wrapped collection's bar early (for example after breaking out)."""
 finish!(it::ProgbioticIterator; wait::Bool = !it.bar.opts.tty) = finish!(it.bar; wait = wait)
 
+# a wrapped collection is a view onto a bar, so it can be handed to the scoped forms
+# directly: with_progress_logging(prog(1:10)) do ... end
+with_progress_logging(f::Function, it::ProgbioticIterator; capture = true) =
+    _with_progress_logging(f, it.bar; capture = capture)
+
 function Base.show(io::IO, it::ProgbioticIterator)
     state = it.bar.state
     print(io, "ProgbioticIterator(", repr(state.desc[]), ", ",

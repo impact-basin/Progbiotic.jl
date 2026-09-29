@@ -110,6 +110,21 @@ using Test
         finish!(wrapped)
     end
 
+    @testset "a wrapped collection is a scope handle too" begin
+        buffer = sink()
+        # a record inherits the bar's vanish timeout, so an entry only survives to be
+        # read back if the bar itself lingers
+        it = prog(1:4; desc = "scoped", io = buffer, vanish = 30.0)
+        with_progress_logging(it) do
+            for _ in it
+                @info "inside"
+            end
+        end
+        @test pbdone(it) == 4
+        @test any(entry -> entry.message == "inside", active_logs(it.bar))
+        finish!(it)
+    end
+
     @testset "show" begin
         it = prog(1:4; desc = "shown", io = sink(), vanish = 0.0)
         text = sprint(show, it)
