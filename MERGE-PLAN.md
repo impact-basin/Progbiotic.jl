@@ -84,3 +84,15 @@ a block job's total is its milestone count.
 - Cross-row alignment applies to theme-derived layouts; a hand-built `layout=` is used
   verbatim and opts out.
 - `finish!`/`wait` semantics unchanged.
+
+## Status when this was written
+
+Done and committed: stages 1-3, 4a, 6 and 8 (file renames, Aqua, lowercase comments,
+README). 590/590 green on Julia 1.13.1.
+
+Not done: this merge (4b), and stage 7 (the macro rewrite proper: splitdef, no
+whole-output esc).
+
+What 4b can assume already exists: BarState and its readers, the terse columns and
+theme_layout, Opts/LogBuf/Paint/RootState, one LogEntry, and capture that is scoped
+rather than global.

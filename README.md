@@ -150,19 +150,22 @@ particular one.
 
 ## Column layouts
 
-A bar is a list of columns joined left-to-right. Build your own out of the pieces
-shipped with the package:
+A bar is a *layout*: a tuple of columns rendered left-to-right and joined with
+single spaces. The default is the AMBER theme's, and a theme is just a way of
+building one -- `theme_layout(t)` -- so styling is fixed when the bar is built
+rather than consulted at render time:
 
 ```julia
-my_layout = [
-    SpinnerColumn(:dots),
-    TextColumn("{desc}"),
-    BarColumn(fill='█', empty='░', width=30),
-    PercentageColumn(),
-    RateColumn(unit="it/s"),
-    ETAColumn(),
-    PostfixColumn(),
-]
+my_layout = (
+    Spinner(:dots),
+    Tag("{desc}"),
+    Bar(; fill = '#', empty = '-', width = 30),
+    Percent(),
+    Count(),
+    Rate(unit = "it/s"),
+    Eta(),
+    Postfix(),
+)
 
 p = Progress(100; layout = my_layout, desc = "Custom Pipeline", vanish = 1.0)
 for i in 1:100
@@ -174,24 +177,32 @@ finish!(p)
 
 | Column | Renders |
 |--------|---------|
-| `SpinnerColumn(style)` | an animated glyph; styles include `:dots`, `:line`, `:arc`, `:clock`, `:moon` |
-| `TextColumn(template)` | `{desc}`, `{n}`, `{total}`, `{pct}`, `{elapsed}`, `{postfix}` |
-| `BarColumn(fill, empty, width)` | the bar, or a bouncing marquee when the total is unknown |
-| `PercentageColumn(digits)` | `45.2%%` |
-| `RateColumn(unit)` | `12.3 it/s`, or `1.5 s/it` below one item per second |
-| `ETAColumn()` | `ETA 00:01:23` |
-| `PostfixColumn()` | the metrics set by `set_postfix!` |
+| `Spinner(style)` | an animated glyph; styles include :dots, :line, :arc, :clock, :moon |
+| `Tag(template)` | `{desc}`, `{n}`, `{total}`, `{pct}`, `{elapsed}`, `{postfix}`; takes a `width` to pad to |
+| `Bar(; fill, empty, width)` | the bar, or a bouncing marquee when the total is unknown |
+| `Bar(units, empty, palette, caps, head)` | the themed bar: stipple glyphs, a palette interpolated along the fill, a tip glyph |
+| `Percent(digits)` | `45.2%` |
+| `Count()` | `(42/100)` |
+| `Rate(unit)` | `12.3 it/s`, or `1.5 s/it` below one item per second |
+| `Eta()` | `ETA 00:01:23` |
+| `Postfix()` | the metrics set by `set_postfix!` |
+
+The label column is `Tag`, not `Text`: Base already owns that name.
 
 Adding your own is two lines:
 
 ```julia
-struct HeartbeatColumn <: Progbiotic.AbstractColumn end
+using Progbiotic: AbstractColumn, render_column, BarState, pbdone, pbtotal
 
-Progbiotic.render_column(::HeartbeatColumn, state::Progbiotic.ProgressState) =
-    state.total === nothing ? "?" : "$(round(Int, 100 * state.current[] / state.total))%"
+struct HeartbeatColumn <: AbstractColumn end
+
+render_column(::HeartbeatColumn, s::BarState) =
+    pbtotal(s) === nothing ? "?" : string(round(Int, 100 * pbdone(s) / pbtotal(s)), "%")
 ```
 
-A column only ever reads the atomic state, so it must be cheap and must not block.
+It is a pure function of the bar's state: no I/O, no locks, no blocking. An
+unstyled column emits no escape sequences at all, so a bar is plain text unless a
+palette gives it colour.
 
 ## Persistent log sinks
 
@@ -220,22 +231,9 @@ closed when the bar is torn down) or any `IO` you own.
 
 ## Capturing logs outside the macro
 
-A `@progress` scope installs its own logger, so it intercepts `@info`,
-`@warn` and friends automatically. So that a bare `prog(...)` or
-`Progress(...)` loop does the same, Progbiotic wraps the process-wide logger once,
-at load time. The wrapper is completely transparent while no bar is running: it defers
-level filtering to the logger it wraps and forwards every record untouched. When a bar
-*is* running, records are drawn under it (and written to its `log_file`).
-
-```julia
-log_capture_enabled()    # true after "using Progbiotic"
-disable_log_capture!()   # hand logging back to the ordinary logger
-enable_log_capture!()    # put the capture layer back
-```
-
-Set `PROGBIOTIC_CAPTURE_LOGS=false` in the environment to load Progbiotic with the
-layer switched off. To capture into one specific bar instead, use the explicit scope
-form, or the `prog`/`Progress` do-block form:
+A `@progress` scope installs its own logger, so it intercepts `@info`, `@warn`
+and friends automatically. So do the explicit scopes: the do-block forms of `prog`
+and `Progress`, and `with_progress_logging`:
 
 ```julia
 p = Progress(100)
@@ -246,6 +244,19 @@ with_progress_logging(p) do
     end
 end
 ```
+
+Capture is *scoped*. Progbiotic does not touch `Logging.global_logger`, so a bare
+loop over `prog(...)` leaves logging exactly as it found it:
+
+```julia
+for x in prog(1:100)      # records here go to the ordinary logger
+    x == 50 && @info "halfway"
+end
+```
+
+To capture in that shape, open a scope around the loop, or use the do-block form
+`prog(1:100) do x ... end`. A bare `set_postfix!()` outside any scope raises, since
+there would be no bar for the metrics to land on.
 
 ### `ProgressLogging.jl`
 
