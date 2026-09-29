@@ -684,7 +684,7 @@ function _flat_job_line(job::ProgJob, depth::Int)
 end
 
 """
-    _pending_tree_logs!(pbar) -> Vector{ProgressLogEntry}
+    _pending_tree_logs!(pbar) -> Vector{LogEntry}
 
 Mark and return every buffered tree log record the flat renderer has not written
 yet, oldest first.  Entries are marked rather than removed: a scope's captured
@@ -693,7 +693,7 @@ streamed out.
 """
 function _pending_tree_logs!(pbar::ProgBar)
     store = pbar.logs
-    pending = ProgressLogEntry[]
+    pending = LogEntry[]
     @lock store.lock begin
         for buffer in values(store.buffers)
             for entry in buffer

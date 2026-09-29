@@ -1,42 +1,8 @@
 # Log-capture plumbing shared by the logger (`src/logger.jl`), the renderer
 # (`src/render.jl`) and the `@progress` macro (`src/meta.jl`).
 
-"""
-    ProgressLogEntry
-
-A single log record intercepted inside a `@progress` scope.
-
-Fields:
-
-- `level`: the `Logging.LogLevel` of the record (`Logging.Info`, `Logging.Warn`, ...).
-- `message`: the rendered message, including any log keyword arguments.
-- `created_at`: the `time()` at which the record was emitted.
-- `vanish_timeout`: seconds the entry stays on screen; inherited from the
-  `vanish`/`vanish_timeout` option of the scope the record was logged in
-  (`Inf` when the scope's bars never vanish).
-"""
-mutable struct ProgressLogEntry
-    level          :: Logging.LogLevel
-    message        :: String
-    created_at     :: Float64
-    vanish_timeout :: Float64
-    # Set once the non-interactive renderer has written the entry out, so an
-    # append-only stream prints each record exactly once.  The entry itself stays
-    # in its buffer and is still pruned by expiry, because active_logs is the
-    # documented way to inspect what a scope captured.
-    printed        :: Bool
-
-    ProgressLogEntry(level, message, created_at, vanish_timeout) =
-        new(level, message, created_at, vanish_timeout, false)
-end
-
-Base.show(io::IO, e::ProgressLogEntry) =
-    print(io, "ProgressLogEntry(", e.level, ", ", repr(e.message), ")")
-
-_expired(e::ProgressLogEntry, now_sec::Float64) = (now_sec - e.created_at) > e.vanish_timeout
-
 # Drops every expired entry from `buf`, in place.
-function _prune_buffer!(buf::Vector{ProgressLogEntry}, now_sec::Float64)
+function _prune_buffer!(buf::Vector{LogEntry}, now_sec::Float64)
     filter!(e -> !_expired(e, now_sec), buf)
     return buf
 end
@@ -78,22 +44,22 @@ are dropped first).
 """
 mutable struct ProgLogStore
     lock        :: ReentrantLock
-    buffers     :: IdDict{ProgJob, Vector{ProgressLogEntry}}
+    buffers     :: IdDict{ProgJob, Vector{LogEntry}}
     max_entries :: Int
 end
 
 ProgLogStore(; max_entries::Int = 1024) =
-    ProgLogStore(ReentrantLock(), IdDict{ProgJob, Vector{ProgressLogEntry}}(), max_entries)
+    ProgLogStore(ReentrantLock(), IdDict{ProgJob, Vector{LogEntry}}(), max_entries)
 
 _log_lock(pbar) = pbar.logs.lock
 
 # Buffer for `job`, created on first use and shared by every context referring to
 # that job.
 function _log_buffer(pbar, job::Union{ProgJob, Nothing})
-    job === nothing && return ProgressLogEntry[]
+    job === nothing && return LogEntry[]
     store = pbar.logs
     @lock store.lock begin
-        return get!(store.buffers, job, ProgressLogEntry[])
+        return get!(store.buffers, job, LogEntry[])
     end
 end
 
@@ -116,7 +82,7 @@ pruned once the `parent` job's vanish timeout elapses.
 struct ProgContext{P}
     pbar       :: P
     parent     :: Union{ProgJob, Nothing}
-    log_buffer :: Vector{ProgressLogEntry}
+    log_buffer :: Vector{LogEntry}
     log_lock   :: ReentrantLock
 end
 
@@ -125,7 +91,7 @@ function ProgContext(pbar, parent::Union{ProgJob, Nothing})
 end
 
 """
-    push_log!(ctx::ProgContext, level, message; kwargs...) -> Union{ProgressLogEntry, Nothing}
+    push_log!(ctx::ProgContext, level, message; kwargs...) -> Union{LogEntry, Nothing}
 
 Appends an intercepted log record to the buffer of `ctx`'s job. `level` is a
 `Logging.LogLevel` (a `:debug`/`:info`/`:warn`/`:error` symbol is also accepted)
@@ -136,11 +102,11 @@ exactly as long as the bar it is attached to.
 function push_log!(ctx::ProgContext, level::Logging.LogLevel, message; kwargs...)
     ctx.parent === nothing && return nothing
     pbar = ctx.pbar
-    entry = ProgressLogEntry(level, _format_log_message(message, kwargs), time(),
+    entry = LogEntry(level, _format_log_message(message, kwargs), time(),
                              _log_timeout(pbar, ctx.parent))
     store = pbar.logs
     @lock store.lock begin
-        buf = get!(store.buffers, ctx.parent, ProgressLogEntry[])
+        buf = get!(store.buffers, ctx.parent, LogEntry[])
         _prune_buffer!(buf, entry.created_at)
         push!(buf, entry)
         overflow = length(buf) - store.max_entries
@@ -184,17 +150,17 @@ prune_logs!(ctx::ProgContext, now_sec::Float64 = time()) = prune_logs!(ctx.pbar,
 
 """
     active_logs(pbar::ProgBar, job, now_sec = time())
-    active_logs(ctx::ProgContext, now_sec = time()) -> Vector{ProgressLogEntry}
+    active_logs(ctx::ProgContext, now_sec = time()) -> Vector{LogEntry}
 
 The non-expired log entries buffered for `job` (or for `ctx`'s job), oldest first.
 Expired entries are pruned as a side effect.
 """
 function active_logs(pbar, job::Union{ProgJob, Nothing}, now_sec::Float64 = time())
-    job === nothing && return ProgressLogEntry[]
+    job === nothing && return LogEntry[]
     store = pbar.logs
     @lock store.lock begin
         buf = get(store.buffers, job, nothing)
-        buf === nothing && return ProgressLogEntry[]
+        buf === nothing && return LogEntry[]
         _prune_buffer!(buf, now_sec)
         return copy(buf)
     end

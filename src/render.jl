@@ -5,27 +5,6 @@
 """The most log lines drawn under a single bar."""
 const MAX_RENDERED_LOGS = 8
 
-
-"""
-    format_plain_log_line(entry::ProgressLogEntry) -> String
-
-The same record as one plain, ANSI-free line, for the non-interactive flat
-renderer and for a log_file sink.
-"""
-format_plain_log_line(entry::ProgressLogEntry) =
-    string("[", _log_level_name(entry.level), "] ", entry.message)
-
-"""
-    format_log_line(entry::ProgressLogEntry) -> String
-
-Formats one intercepted record as a colour-coded line: cyan for `@info`, yellow for
-`@warn`, blue for `@debug` and red for `@error`.
-"""
-function format_log_line(entry::ProgressLogEntry)
-    return string(_log_color(entry.level), "▏", uppercase(string(entry.level)), " ",
-                  entry.message, _ANSI_RESET)
-end
-
 """
     _render_job_logs(io, pbar, job, prefix, syms, now_sec) -> Int
 

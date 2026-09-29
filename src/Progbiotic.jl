@@ -48,7 +48,6 @@ export show_progjob_with_theme
 export with_job
 
 include("context.jl")
-export ProgressLogEntry
 export push_log!
 export prune_logs!
 export active_logs
@@ -69,13 +68,9 @@ include("logger.jl")
 export ProgbioticLogger
 export current_prog_context
 export current_progress_target
-export current_active_context
 export LogEntry
 export set_postfix!
 export with_progress_logging
-export enable_log_capture!
-export disable_log_capture!
-export log_capture_enabled
 
 # --- Ergonomic interfaces ----------------------------------------------------
 include("iterator.jl")
@@ -92,16 +87,4 @@ export withprogress
 
 include("macro.jl")
 export @progress
-
-function __init__()
-    # Wrap the process-wide logger so bare prog/Progress loops intercept logs the
-    # same way @progress scopes do.  Transparent whenever no bar is running; see
-    # src/logger.jl.
-    try
-        __init_capture!()
-    catch
-    end
-    return nothing
-end
-
 end

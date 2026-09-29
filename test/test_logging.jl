@@ -39,7 +39,7 @@ end
               [Logging.Info, Logging.Warn, Logging.Debug, Logging.Error]
         @test occursin("informational", entries[1].message)
         @test occursin("answer=42", entries[1].message)   # keyword args are kept
-        @test entries[1].vanish_timeout == Inf            # no vanish timeout: kept
+        @test entries[1].vanish == Inf            # no vanish timeout: kept
         @test all(e -> e.created_at <= time(), entries)
         # the context exposes the buffer of the job it belongs to
         @test ctx.log_buffer === ctx.pbar.logs.buffers[ctx.parent]
@@ -86,11 +86,11 @@ end
         ctx = log_ctx(vanish_timeout = 0.2)
         push_log!(ctx, Logging.Info, "short lived")
         @test length(active_logs(ctx)) == 1
-        @test active_logs(ctx)[1].vanish_timeout == 0.2
+        @test active_logs(ctx)[1].vanish == 0.2
         sleep(0.35)
         @test isempty(active_logs(ctx))
         # pruned, not merely filtered: the buffer itself is emptied
-        @test isempty(get(ctx.pbar.logs.buffers, ctx.parent, ProgressLogEntry[]))
+        @test isempty(get(ctx.pbar.logs.buffers, ctx.parent, LogEntry[]))
         @test !Progbiotic.has_active_logs(ctx.pbar, ctx.parent)
 
         # without a vanish timeout the entry is kept indefinitely
@@ -98,7 +98,7 @@ end
         push_log!(ctx2, :info, "kept")                     # symbol levels work too
         sleep(0.35)
         @test length(active_logs(ctx2)) == 1
-        @test active_logs(ctx2)[1].vanish_timeout == Inf
+        @test active_logs(ctx2)[1].vanish == Inf
 
         # prune_logs! drops everything that has expired
         ctx3 = log_ctx(vanish_timeout = 0.1)
@@ -159,7 +159,7 @@ end
         @test [e.level for e in entries] == [Logging.Info, Logging.Warn]
         @test entries[1].message == "checkpoint at record 2"
         @test entries[2].message == "malformed record 4"
-        @test all(e -> e.vanish_timeout == 3.0, entries)    # from `vanish=3.0`
+        @test all(e -> e.vanish == 3.0, entries)    # from `vanish=3.0`
     end
 
     @testset "@progress capture option" begin
@@ -198,13 +198,13 @@ end
         end
         outer_entries = active_logs(outer)
         @test [e.message for e in outer_entries] == ["outer 1", "outer 2"]
-        @test all(e -> e.vanish_timeout == 5.0, outer_entries)
+        @test all(e -> e.vanish == 5.0, outer_entries)
         @test all(e -> !startswith(e.message, "inner"), outer_entries)
 
         inner_ctx = ProgContext(outer.pbar, inner.parent)
         inner_entries = active_logs(inner_ctx)
         @test [e.message for e in inner_entries] == ["inner 2.1", "inner 2.2", "inner 2.3"]
-        @test all(e -> e.vanish_timeout == 0.5, inner_entries)
+        @test all(e -> e.vanish == 0.5, inner_entries)
         @test inner_ctx.pbar === outer.pbar
     end
 
@@ -214,7 +214,7 @@ end
             @info "inside the block"
         end
         @test [e.message for e in active_logs(blk)] == ["inside the block"]
-        @test active_logs(blk)[1].vanish_timeout == 2.0
+        @test active_logs(blk)[1].vanish == 2.0
     end
 
     @testset "with=ctx subroutines capture into the active job" begin
@@ -233,7 +233,7 @@ end
         entries = reduce(vcat, (active_logs(sub) for sub in subtask_ctxs))
         @test length(entries) == 2
         @test all(e -> occursin("from the subroutine", e.message), entries)
-        @test all(e -> e.vanish_timeout == 1.0, entries)
+        @test all(e -> e.vanish == 1.0, entries)
     end
 
     @testset "thread-safe capture under Threads.@threads" begin

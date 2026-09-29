@@ -176,37 +176,48 @@ end
         @test length(unique(entry.message for entry in entries)) == 200
     end
 
-    @testset "global capture reaches a bare handle" begin
-        @test log_capture_enabled()
-        bar = Progress(10; desc = "global", io = IOBuffer(), tty = false, vanish = 60.0)
-        @info "captured by the active bar"
-        @warn "also captured"
-        entries = active_logs(bar.ctx)
-        @test length(entries) == 2
-        @test occursin("captured by the active bar", entries[1].message)
-        @test entries[1].level == Logging.Info
-        @test entries[2].level == Logging.Warn
-        @test occursin("also captured", join(render_block(bar.ctx), "\n"))
+    @testset "capture is scoped, never global" begin
+        # a bare handle installs nothing process-wide: loading this package must not
+        # patch Logging.global_logger, so a record emitted here stays ordinary
+        bar = Progress(10; desc = "bare", io = IOBuffer(), tty = false, vanish = 60.0)
+        @info "not captured by a bare handle"
+        @warn "also not captured"
+        @test isempty(active_logs(bar.ctx))
         finish!(bar; wait = true)
 
-        # with no bar running, records are ordinary again and nothing is buffered
-        @test current_active_context() === nothing
-
-        # the layer can be switched off and back on
-        @test disable_log_capture!()
-        @test !log_capture_enabled()
-        @test !disable_log_capture!()
-        @test enable_log_capture!()
-        @test log_capture_enabled()
+        # an explicit scope is what captures
+        scoped = Progress(10; desc = "scoped", io = IOBuffer(), tty = false, vanish = 60.0)
+        with_progress_logging(scoped) do
+            @info "captured by the scope"
+            @warn "also captured"
+        end
+        entries = active_logs(scoped.ctx)
+        @test length(entries) == 2
+        @test entries[1].level == Logging.Info
+        @test entries[2].level == Logging.Warn
+        @test occursin("also captured", join(render_block(scoped.ctx), "\n"))
+        finish!(scoped; wait = true)
     end
 
-    @testset "bare prog loops intercept logs" begin
-        wrapped = prog(1:4; desc = "global iterator", io = IOBuffer(), tty = false,
+    @testset "a bare prog loop does not intercept logs" begin
+        wrapped = prog(1:4; desc = "bare iterator", io = IOBuffer(), tty = false,
                        vanish = 60.0)
         for x in wrapped
             x == 2 && @info "from the loop body"
         end
-        @test occursin("from the loop body", join(render_block(wrapped.ctx), "\n"))
+        @test isempty(active_logs(wrapped.ctx))
+        finish!(wrapped; wait = true)
+
+        # wrap the same loop in an explicit scope and it is captured
+        scoped = prog(1:4; desc = "scoped iterator", io = IOBuffer(), tty = false,
+                      vanish = 60.0)
+        with_progress_logging(scoped) do
+            for x in scoped
+                x == 2 && @info "captured from the loop body"
+            end
+        end
+        @test occursin("captured from the loop body", join(render_block(scoped.ctx), "\n"))
+        finish!(scoped; wait = true)
     end
 
     @testset "ProgressLogging records drive the bar" begin

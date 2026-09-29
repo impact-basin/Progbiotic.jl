@@ -72,7 +72,8 @@ A log record as a colour-coded line for the interactive display.  The coloured b
 glyph marks the line as progress output rather than user output.
 """
 function format_log_line(entry::LogEntry)
-    return string(_log_color(entry.level), "▏ ", entry.message, _ANSI_RESET)
+    return string(_log_color(entry.level), "▏", _log_level_name(entry.level), " ",
+                  entry.message, _ANSI_RESET)
 end
 
 # ---------------------------------------------------------------------------
@@ -323,7 +324,6 @@ computation; it is worth it only when such a loop is expected.
 function start_render_task!(ctx::ProgressContext; threaded::Bool = false)
     ctx.task === nothing || return ctx.task
     ctx.running[] = true
-    _register_active!(ctx)
     ctx.task = threaded ? Threads.@spawn(_render_loop(ctx)) : (@async _render_loop(ctx))
     return ctx.task
 end
@@ -376,7 +376,6 @@ function _render_loop(ctx::ProgressContext)
             _close_log_sink!(ctx)
         catch
         end
-        _unregister_active!(ctx)
     end
     return nothing
 end
@@ -406,7 +405,6 @@ function stop_render_task!(ctx::ProgressContext; wait::Bool = true)
     ctx.running[] = false
     task = ctx.task
     (task !== nothing && wait) && _wait_quietly(task)
-    _unregister_active!(ctx)
     return nothing
 end
 
@@ -426,7 +424,6 @@ function finish!(ctx::ProgressContext; wait::Bool = !ctx.tty)
     if ctx.finished[]
         (wait && ctx.task !== nothing) && _wait_quietly(ctx.task)
         ctx.task === nothing && _close_log_sink!(ctx)
-        _unregister_active!(ctx)
         return nothing
     end
     state = ctx.state
@@ -446,7 +443,6 @@ function finish!(ctx::ProgressContext; wait::Bool = !ctx.tty)
         # task can never both draw - or erase - the same block.
         _wait_quietly(task)
     end
-    _unregister_active!(ctx)
     return nothing
 end
 

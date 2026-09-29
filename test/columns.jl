@@ -148,10 +148,16 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
         # a custom separator
         @test occursin("; ", render_column(Postfix("; "), state))
 
-        # a bare set_postfix! reaches the innermost live bar
+        # a bare set_postfix! outside any scope is a mistake, not a silent no-op
+        @test_throws ProgbioticError set_postfix!(; epoch = 3)
+
+        # inside a scope it reaches that scope's bar
         live = Progress(10; desc = "live", io = IOBuffer(), tty = false, vanish = 0.0)
-        set_postfix!(; epoch = 3)
+        with_progress_logging(live) do
+            set_postfix!(; epoch = 3)
+        end
         @test occursin("epoch=3", render_column(Postfix(), live.ctx.state))
+        finish!(live; wait = true)
         finish!(live; wait = true)
     end
 

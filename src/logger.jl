@@ -67,10 +67,9 @@ function ProgbioticLogger(context::Union{ProgContext, ProgressContext, Nothing} 
                           parent::Union{Logging.AbstractLogger, Nothing} = Logging.current_logger())
     # A scope logger forwards its uncaptured records straight past the global
     # capture layer, so opting out of capture locally really does opt out.
-    return ProgbioticLogger(context, _capture_levels(capture), _strip_capture_wrapper(parent))
+    return ProgbioticLogger(context, _capture_levels(capture), parent)
 end
 
-_strip_capture_wrapper(logger) = logger
 
 # Task-local storage key holding the innermost context executing in this task.
 const _PROG_CTX_KEY = :__progbiotic_current_context__
@@ -95,58 +94,6 @@ What a bare set_postfix!(; kwargs...) should attach its metrics to.  Inside a
 context itself.
 """
 current_progress_target() = get(task_local_storage(), _PROG_TARGET_KEY, nothing)
-
-# ---------------------------------------------------------------------------
-# Active-context registry (fallback for set_postfix!)
-# ---------------------------------------------------------------------------
-#
-# "for x in prog(...)" runs the loop body in the caller's task, so there is no
-# dynamic scope in which to install a task-local target.  Rather than paying a
-# task-local write on every iteration - which is exactly the overhead this package
-# exists to avoid - the engine keeps a small registry of live bars and a bare
-# set_postfix!() falls back to the innermost one.
-
-const _ACTIVE_LOCK = ReentrantLock()
-const _ACTIVE_CONTEXTS = Any[]
-
-"""Register a live bar so a bare set_postfix!() can find it."""
-function _register_active!(ctx)
-    @lock _ACTIVE_LOCK push!(_ACTIVE_CONTEXTS, ctx)
-    return ctx
-end
-
-"""Drop a finished bar from the registry."""
-function _unregister_active!(ctx)
-    @lock _ACTIVE_LOCK filter!(existing -> existing !== ctx, _ACTIVE_CONTEXTS)
-    return nothing
-end
-
-"""
-    current_active_context() -> Union{ProgressContext, ProgContext, Nothing}
-
-The innermost live progress bar: the most recently started one that has not
-finished.  Used only as a fallback when no task-local target is installed.
-"""
-function current_active_context()
-    @lock _ACTIVE_LOCK begin
-        for index in length(_ACTIVE_CONTEXTS):-1:1
-            candidate = _ACTIVE_CONTEXTS[index]
-            if candidate isa ProgressContext
-                candidate.finished[] || return candidate
-            else
-                return candidate
-            end
-        end
-    end
-    return nothing
-end
-
-"""The bar a bare set_postfix!() should update, or nothing."""
-function _postfix_target()
-    target = current_progress_target()
-    target === nothing || return target
-    return current_active_context()
-end
 
 # ---------------------------------------------------------------------------
 # Persistent sinks
@@ -238,7 +185,7 @@ Append an intercepted record to a column-renderer bar, and mirror it to the
 persistent sink when one is configured.
 """
 function push_log!(ctx::ProgressContext, level::Logging.LogLevel, message; kwargs...)
-    entry = LogEntry(level, _format_log_message(message, kwargs), time())
+    entry = LogEntry(level, _format_log_message(message, kwargs), time(), ctx.vanish)
     @lock ctx.log_lock begin
         push!(ctx.logs, entry)
         # Bound the buffer: only the newest entries can ever be on screen.
@@ -260,7 +207,7 @@ render tick, so the renderer only ever measures lines it is about to draw.
 """
 function prune_logs!(ctx::ProgressContext, now_sec::Float64 = time())
     @lock ctx.log_lock begin
-        filter!(entry -> !_expired(entry, now_sec, ctx.vanish), ctx.logs)
+        filter!(entry -> !_expired(entry, now_sec), ctx.logs)
     end
     return nothing
 end
@@ -503,128 +450,6 @@ function Logging.handle_message(logger::ProgbioticLogger, level, message, _modul
 end
 
 # ---------------------------------------------------------------------------
-# The global capture layer
-# ---------------------------------------------------------------------------
-#
-# A macro can wrap its loop body in a logger, but "for x in prog(...)" cannot: the
-# loop body runs in the caller's task, outside any dynamic scope the iterator could
-# open.  So that a bare prog/Progress loop intercepts logs the same way @progress
-# does, Progbiotic wraps the process-wide logger once, at load time.
-#
-# The wrapper is completely transparent whenever no bar is running: it asks the
-# logger it wraps whether the record would be logged at all, and with no bar active
-# it simply forwards the record.  It never lowers min_enabled_level, so no @debug
-# statement starts being evaluated merely because Progbiotic was loaded.
-
-"""
-    ProgbioticGlobalLogger(parent)
-
-The process-wide log-capture layer installed by the Progbiotic __init__ hook.
-
-When a progress bar is active, records are diverted into it - which is what makes a
-bare prog(...) loop intercept @info and @warn exactly as a @progress scope does.
-When no bar is active the record is handed to parent untouched, and
-min_enabled_level / shouldlog defer entirely to parent, so installing this layer
-changes nothing about which records exist.
-
-Turn it off with disable_log_capture!, or by setting the environment variable
-PROGBIOTIC_CAPTURE_LOGS to false before loading Progbiotic.
-"""
-struct ProgbioticGlobalLogger <: Logging.AbstractLogger
-    parent :: Union{Logging.AbstractLogger, Nothing}
-end
-
-Logging.min_enabled_level(logger::ProgbioticGlobalLogger) =
-    logger.parent === nothing ? Logging.Info : Logging.min_enabled_level(logger.parent)
-
-Logging.shouldlog(logger::ProgbioticGlobalLogger, level, _module, group, id) =
-    logger.parent !== nothing && Logging.shouldlog(logger.parent, level, _module, group, id)
-
-Logging.catch_exceptions(logger::ProgbioticGlobalLogger) =
-    logger.parent === nothing ? true : Logging.catch_exceptions(logger.parent)
-
-function Logging.handle_message(logger::ProgbioticGlobalLogger, level, message, _module,
-                                group, id, file, line; kwargs...)
-    bar = _active_capture_bar()
-    if bar !== nothing
-        payload = _progress_payload(level, message, kwargs)
-        if payload !== nothing
-            handle_progress_record(bar, payload)
-            return nothing
-        end
-        push_log!(bar, level, message; kwargs...)
-        return nothing
-    end
-    parent = logger.parent
-    parent === nothing && return nothing
-    Logging.handle_message(parent, level, message, _module, group, id, file, line; kwargs...)
-    return nothing
-end
-
-_strip_capture_wrapper(logger::ProgbioticGlobalLogger) = logger.parent
-
-"""The bar logs should be diverted into, or nothing when none is running."""
-function _active_capture_bar()
-    scope = current_prog_context()
-    scope === nothing || return scope
-    return current_active_context()
-end
-
-const _CAPTURE_LOCK = ReentrantLock()
-const _CAPTURE_LAYER = Ref{Union{ProgbioticGlobalLogger, Nothing}}(nothing)
-
-"""
-    enable_log_capture!() -> Bool
-
-Install the global capture layer, so that log records emitted while a progress bar
-is running are drawn under that bar (and mirrored to its log_file) instead of being
-printed.  Called automatically when Progbiotic is loaded; returns whether the layer
-is installed afterwards.
-"""
-function enable_log_capture!()
-    @lock _CAPTURE_LOCK begin
-        _CAPTURE_LAYER[] === nothing || return true
-        previous = Logging.global_logger()
-        previous isa ProgbioticGlobalLogger && return false
-        layer = ProgbioticGlobalLogger(previous)
-        Logging.global_logger(layer)
-        _CAPTURE_LAYER[] = layer
-    end
-    return true
-end
-
-"""
-    disable_log_capture!() -> Bool
-
-Remove the global capture layer, restoring the logger that was installed before it.
-Progress bars keep working; their log records simply go to the ordinary logger.
-"""
-function disable_log_capture!()
-    @lock _CAPTURE_LOCK begin
-        layer = _CAPTURE_LAYER[]
-        layer === nothing && return false
-        Logging.global_logger(layer.parent)
-        _CAPTURE_LAYER[] = nothing
-    end
-    return true
-end
-
-"""Whether the global capture layer is currently installed."""
-log_capture_enabled() = _CAPTURE_LAYER[] !== nothing
-
-"""
-    __init_capture!() -> Bool
-
-Install the global capture layer at package load, unless the environment variable
-PROGBIOTIC_CAPTURE_LOGS is set to false.
-"""
-function __init_capture!()
-    capture = lowercase(strip(get(ENV, "PROGBIOTIC_CAPTURE_LOGS", "true")))
-    (capture == "false" || capture == "0" || capture == "no") && return false
-    return enable_log_capture!()
-end
-
-# ---------------------------------------------------------------------------
 # Scope helpers
 # ---------------------------------------------------------------------------
 
@@ -638,15 +463,8 @@ generated by @progress for every progress level.
 """
 function _with_log_capture(f::Function, ctx::ProgContext, capture)
     logger = ProgbioticLogger(ctx; capture = capture)
-    _register_active!(ctx)
     return Logging.with_logger(logger) do
-        try
-            # Scoped, so that leaving a nested level restores the outer level's
-            # job as the target of a bare set_postfix!().
-            _with_scope(f, ctx)
-        finally
-            _unregister_active!(ctx)
-        end
+        _with_scope(f, ctx)
     end
 end
 
@@ -722,8 +540,10 @@ scope, the job of the innermost level; inside a prog/Progress scope, that bar.
 Metrics may also be attached to a specific bar by passing it explicitly.
 """
 function set_postfix!(; kwargs...)
-    target = _postfix_target()
-    target === nothing && return nothing
+    target = current_progress_target()
+    target === nothing && throw(ProgbioticError(
+        "set_postfix! was called outside a progress scope; call it inside @progress, ",
+        "prog(f, iter) or Progress(f, n), or pass a bar explicitly: set_postfix!(bar; ...)"))
     return set_postfix!(target; kwargs...)
 end
 

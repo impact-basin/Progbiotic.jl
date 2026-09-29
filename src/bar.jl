@@ -203,15 +203,16 @@ mutable struct LogEntry
     level      :: Logging.LogLevel
     message    :: String
     created_at :: Float64
+    vanish     :: Float64
     printed    :: Bool
 end
 
-LogEntry(level, message, created_at) = LogEntry(level, message, created_at, false)
+LogEntry(level, message, created_at, vanish) = LogEntry(level, message, created_at, vanish, false)
 
 Base.show(io::IO, e::LogEntry) = print(io, "LogEntry(", e.level, ", ", repr(e.message), ")")
 
-"""True once the entry is older than the given number of seconds."""
-_expired(e::LogEntry, now_sec::Float64, vanish::Float64) = (now_sec - e.created_at) > vanish
+"""True once the entry is older than its own vanish timeout."""
+_expired(e::LogEntry, now_sec::Float64) = (now_sec - e.created_at) > e.vanish
 
 
 """
