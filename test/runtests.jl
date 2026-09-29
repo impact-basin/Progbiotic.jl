@@ -72,6 +72,7 @@ using Test
     end
 
     include("bar.jl")
+    include("quality.jl")
     include("node.jl")
     include("iterator.jl")
     include("columns.jl")

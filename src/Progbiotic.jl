@@ -13,7 +13,7 @@ include("bar.jl")
 export BarState
 export pbdone, pbtotal, pbfraction, pbrate, pbeta, pbelapsed, pbruntime, isfinished
 
-include("look.jl")
+include("style.jl")
 export Theme
 export CYBERPUNK, NEON, MATRIX, AMBER, EMERALD, OCEAN, GLACIER, TOKYO_NIGHT
 export SYNTHWAVE, MAGMA, MONOCHROME, AURORA, DRACULA, SAKURA, GRUVBOX, REDLINE
@@ -85,6 +85,6 @@ export update!
 export finish!
 export withprogress
 
-include("macro.jl")
+include("macros.jl")
 export @progress
 end

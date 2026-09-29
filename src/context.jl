@@ -1,5 +1,5 @@
 # Log-capture plumbing shared by the logger (`src/logger.jl`), the renderer
-# (`src/render.jl`) and the `@progress` macro (`src/meta.jl`).
+# (src/render.jl) and the @progress macro (src/macros.jl).
 
 # Drops every expired entry from `buf`, in place.
 function _prune_buffer!(buf::Vector{LogEntry}, now_sec::Float64)

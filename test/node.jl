@@ -2,9 +2,6 @@ using Progbiotic
 using Progbiotic: render_column
 using Test
 
-# A throwaway bar: no terminal, nothing lingering, so a test can never leave a
-# render task behind or scribble on the suite's output.
-sink() = IOBuffer()
 
 @testset "node.jl" begin
     @testset "Tag pads to a width when asked" begin
