@@ -31,7 +31,7 @@ using Test
     @testset "bound context usable inside threaded loop" begin
         ok = Ref(true)
         @progress (ctx => "Bound threaded") Base.Threads.@threads for i in 1:50
-            ok[] &= ctx.parent !== nothing
+            ok[] &= ctx isa Progress && pbtotal(ctx) == 50
             sleep(0.0002)
         end
         @test ok[]

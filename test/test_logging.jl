@@ -16,183 +16,218 @@ Logging.catch_exceptions(::SinkLogger) = true
 Logging.handle_message(sink::SinkLogger, level, message, _module, group, id, file, line;
                        kwargs...) = (push!(sink.records, (level, string(message))); nothing)
 
-# Builds a context around a single job. `vanish_timeout` mirrors the `vanish`
-# option of a `@progress` scope: `nothing` means the bar (and its logs) never vanish.
-function log_ctx(; vanish_timeout = nothing, desc = "job")
-    pbar = ProgBar("log tests")
-    job = add_job!(pbar, desc; total = 3, vanish_timeout = vanish_timeout)
-    return ProgContext(pbar, job)
-end
+# A node with no children is a standalone bar. Its vanish timeout is how long the bar
+# *and the records it holds* stay on screen, where nothing means forever. Nothing
+# renders it (start = false), so a test can ask the renderer for a frame whenever it
+# likes.
+log_node(; vanish = nothing, desc = "job", title = "") =
+    Progress(3; desc = desc, title = title, vanish = vanish, io = IOBuffer(), start = false)
 
 @testset "test_logging.jl" begin
     @testset "captures @info, @warn, @debug and @error" begin
-        ctx = log_ctx()
-        Logging.with_logger(ProgbioticLogger(ctx)) do
+        node = log_node()
+        Logging.with_logger(ProgbioticLogger(node)) do
             @info "informational" answer = 42
             @warn "careful"
             @debug "verbose"
             @error "broken"
         end
-        entries = active_logs(ctx)
+        entries = active_logs(node)
         @test length(entries) == 4
         @test [e.level for e in entries] ==
               [Logging.Info, Logging.Warn, Logging.Debug, Logging.Error]
         @test occursin("informational", entries[1].message)
         @test occursin("answer=42", entries[1].message)   # keyword args are kept
-        @test entries[1].vanish == Inf            # no vanish timeout: kept
+        @test entries[1].vanish == Inf                    # no vanish timeout: kept
         @test all(e -> e.created_at <= time(), entries)
-        # the context exposes the buffer of the job it belongs to
-        @test ctx.log_buffer === ctx.pbar.logs.buffers[ctx.parent]
-        @test ctx.log_lock === ctx.pbar.logs.lock
-        @test current_prog_context() === nothing
+
+        # the records are the node's own - its buffer holds them - while the permanent
+        # sink they would be mirrored to belongs to the tree, which is the node here
+        @test length(node.logs.entries) == 4
+        @test Progbiotic.has_active_logs(node)
+        @test node.root.sink === nothing
+        @test current_bar() === nothing                   # nothing is left installed
     end
 
     @testset "capture filtering and pass-through" begin
-        ctx = log_ctx()
+        node = log_node()
         sink = SinkLogger()
-        Logging.with_logger(ProgbioticLogger(ctx; capture = [:warn, :error], parent = sink)) do
+        Logging.with_logger(ProgbioticLogger(node; capture = [:warn, :error], parent = sink)) do
             @info "handled by the parent logger"
             @warn "intercepted"
         end
-        entries = active_logs(ctx)
+        entries = active_logs(node)
         @test length(entries) == 1
         @test entries[1].level == Logging.Warn
         @test occursin("intercepted", entries[1].message)
         @test sink.records == [(Logging.Info, "handled by the parent logger")]
 
         # capture = false: nothing is intercepted
-        ctx2 = log_ctx()
+        node2 = log_node()
         sink2 = SinkLogger()
-        Logging.with_logger(ProgbioticLogger(ctx2; capture = false, parent = sink2)) do
+        Logging.with_logger(ProgbioticLogger(node2; capture = false, parent = sink2)) do
             @info "not captured"
             @error "also not captured"
         end
-        @test isempty(active_logs(ctx2))
+        @test isempty(active_logs(node2))
         @test [r[1] for r in sink2.records] == [Logging.Info, Logging.Error]
 
         # a LogLevel captures that level and above
-        ctx3 = log_ctx()
+        node3 = log_node()
         sink3 = SinkLogger()
-        Logging.with_logger(ProgbioticLogger(ctx3; capture = Logging.Warn, parent = sink3)) do
+        Logging.with_logger(ProgbioticLogger(node3; capture = Logging.Warn, parent = sink3)) do
             @info "below"
             @warn "at"
             @error "above"
         end
-        @test [e.level for e in active_logs(ctx3)] == [Logging.Warn, Logging.Error]
+        @test [e.level for e in active_logs(node3)] == [Logging.Warn, Logging.Error]
         @test [r[1] for r in sink3.records] == [Logging.Info]
     end
 
+    @testset "_with_log_capture installs the logger and the current bar" begin
+        node = log_node()
+        Logging.with_logger(Logging.NullLogger()) do
+            Progbiotic._with_log_capture(node, [:warn]) do
+                @test current_bar() === node            # a bare set_postfix! would find it
+                @info "not captured"
+                @warn "captured"
+            end
+        end
+        @test [e.level for e in active_logs(node)] == [Logging.Warn]
+        @test current_bar() === nothing                 # and the scope is unwound again
+    end
+
     @testset "entries expire after the scope's vanish timeout" begin
-        ctx = log_ctx(vanish_timeout = 0.2)
-        push_log!(ctx, Logging.Info, "short lived")
-        @test length(active_logs(ctx)) == 1
-        @test active_logs(ctx)[1].vanish == 0.2
+        node = log_node(vanish = 0.2)
+        push_log!(node, Logging.Info, "short lived")
+        @test length(active_logs(node)) == 1
+        @test active_logs(node)[1].vanish == 0.2
         sleep(0.35)
-        @test isempty(active_logs(ctx))
-        # pruned, not merely filtered: the buffer itself is emptied
-        @test isempty(get(ctx.pbar.logs.buffers, ctx.parent, LogEntry[]))
-        @test !Progbiotic.has_active_logs(ctx.pbar, ctx.parent)
+        @test isempty(active_logs(node))
+        # pruned, not merely filtered: the node's buffer itself is emptied
+        @test isempty(node.logs.entries)
+        @test !Progbiotic.has_active_logs(node)
+
+        # expiry is measured against the time it is asked about, so a test can age an
+        # entry without sleeping: push_log! hands back the entry it stored
+        timed = log_node(vanish = 0.2)
+        entry = push_log!(timed, Logging.Info, "measured")
+        @test [e.message for e in active_logs(timed, entry.created_at + 0.1)] == ["measured"]
+        @test isempty(active_logs(timed, entry.created_at + 0.3))
+        @test !Progbiotic.has_active_logs(timed, entry.created_at + 0.3)
 
         # without a vanish timeout the entry is kept indefinitely
-        ctx2 = log_ctx()
-        push_log!(ctx2, :info, "kept")                     # symbol levels work too
+        kept = log_node()
+        push_log!(kept, :info, "kept")                     # symbol levels work too
         sleep(0.35)
-        @test length(active_logs(ctx2)) == 1
-        @test active_logs(ctx2)[1].vanish == Inf
+        @test length(active_logs(kept)) == 1
+        @test active_logs(kept)[1].vanish == Inf
 
         # prune_logs! drops everything that has expired
-        ctx3 = log_ctx(vanish_timeout = 0.1)
-        push_log!(ctx3, Logging.Warn, "gone soon")
+        pruned = log_node(vanish = 0.1)
+        push_log!(pruned, Logging.Warn, "gone soon")
         sleep(0.25)
-        prune_logs!(ctx3)
-        @test isempty(active_logs(ctx3))
-        @test all(isempty, values(ctx3.pbar.logs.buffers))
+        prune_logs!(pruned)
+        @test isempty(active_logs(pruned))
+        @test isempty(pruned.logs.entries)
     end
 
     @testset "log lines render under their bar" begin
-        ctx = log_ctx(vanish_timeout = 0.25)
-        push_log!(ctx, Logging.Info, "rendered info")
-        rendered = render_progbar_tree(ctx.pbar)
+        # a generous timeout here: building a node and drawing the first tree costs more
+        # than a tight window would allow, and expiry is checked by aging explicitly below
+        node = log_node(vanish = 30.0, title = "log tests")
+        push_log!(node, Logging.Info, "rendered info")
+        rendered = render_tree(node)
         @test occursin("rendered info", rendered)
         @test occursin("INFO", rendered)
         @test occursin("\e[36m", rendered)                # cyan for @info
         @test count(l -> occursin("INFO", l), split(chomp(rendered), '\n')) == 1
 
-        push_log!(ctx, Logging.Warn, "rendered warn")
-        warn_rendered = render_progbar_tree(ctx.pbar)
+        push_log!(node, Logging.Warn, "rendered warn")
+        warn_rendered = render_tree(node)
         @test occursin("rendered warn", warn_rendered)
         @test occursin("\e[33m", warn_rendered)           # yellow for @warn
         # both lines sit under the bar (title + bar + 2 logs)
         @test length(split(chomp(warn_rendered), '\n')) == 4
 
-        sleep(0.4)
-        expired = render_progbar_tree(ctx.pbar)
-        @test !occursin("rendered info", expired)
-        @test !occursin("rendered warn", expired)
+        # the tree is drawn as of a time it is handed, so an entry can be aged out
+        # without waiting for it
+        aged = log_node(vanish = 1.0)
+        entry = push_log!(aged, Logging.Info, "aged out")
+        @test occursin("aged out", render_tree(aged; now_sec = entry.created_at + 0.5))
+        @test !occursin("aged out", render_tree(aged; now_sec = entry.created_at + 1.5))
+        @test isempty(aged.logs.entries)        # pruned by the render, not just hidden
 
         # multi-line messages are flattened to a single gutter row
-        ml = log_ctx()
+        ml = log_node(vanish = 30.0)
         push_log!(ml, Logging.Info, "first line\nsecond line")
-        ml_rendered = render_progbar_tree(ml.pbar)
+        ml_rendered = render_tree(ml)
         @test occursin("first line second line", ml_rendered)
-        @test length(split(chomp(ml_rendered), '\n')) == 3   # title + bar + 1 log
+        @test length(split(chomp(ml_rendered), '\n')) == 2    # bar + 1 log
     end
 
     @testset "a bar with live logs stays visible" begin
-        ctx = log_ctx(vanish_timeout = 0.4)
-        update!(ctx.pbar, ctx.parent, 3)                    # the bar completes
+        node = log_node(vanish = 0.4)
+        update!(node, 3)                                    # the bar completes
+        t0 = time()
+        render_tree(node; now_sec = t0)                     # the tick stamps completion
         sleep(0.3)
-        push_log!(ctx, Logging.Info, "lingering")           # outlives the bar's window
-        sleep(0.3)
-        @test occursin("lingering", render_progbar_tree(ctx.pbar))
-        sleep(0.5)
-        @test !occursin("lingering", render_progbar_tree(ctx.pbar))
+        entry = push_log!(node, Logging.Info, "lingering")  # outlives the bar's window
+        # the bar's own window is over at t0 + 0.4, the record's runs to t0 + 0.7: the
+        # live record is what keeps the bar on screen
+        live = render_tree(node; now_sec = t0 + 0.5)
+        @test occursin("job", live)
+        @test occursin("lingering", live)
+        # once the record has expired too, the standalone bar goes with it
+        @test render_tree(node; now_sec = t0 + 0.8) == ""
+        @test isempty(active_logs(node, t0 + 0.8))
+        @test entry.vanish == 0.4
     end
 
     @testset "@progress intercepts the standard logging macros" begin
-        ctx = nothing
-        @progress ctx "Ingesting" total=5 vanish=3.0 for i in 1:5
+        node = nothing
+        @progress node "Ingesting" total = 5 vanish = 3.0 io = IOBuffer() for i in 1:5
             i == 2 && @info "checkpoint at record $i"
             i == 4 && @warn "malformed record $i"
         end
-        entries = active_logs(ctx)
+        entries = active_logs(node)
         @test [e.level for e in entries] == [Logging.Info, Logging.Warn]
         @test entries[1].message == "checkpoint at record 2"
         @test entries[2].message == "malformed record 4"
-        @test all(e -> e.vanish == 3.0, entries)    # from `vanish=3.0`
+        @test all(e -> e.vanish == 3.0, entries)    # from the vanish = 3.0 option
     end
 
     @testset "@progress capture option" begin
         Logging.with_logger(Logging.NullLogger()) do
-            ctx = nothing
-            @progress ctx "Filtered" capture=[:error] vanish=1.0 for i in 1:3
+            node = nothing
+            @progress node "Filtered" capture = [:error] vanish = 1.0 io = IOBuffer() for i in 1:3
                 @info "goes to the surrounding logger"
                 i == 1 && @error "captured"
             end
-            entries = active_logs(ctx)
+            entries = active_logs(node)
             @test length(entries) == 1
             @test entries[1].level == Logging.Error
 
             alias = nothing
-            @progress alias "Alias" capture_logs=[:warn] for i in 1:2
+            @progress alias "Alias" capture_logs = [:warn] io = IOBuffer() for i in 1:2
                 i == 2 && @warn "alias captured"
             end
             @test [e.message for e in active_logs(alias)] == ["alias captured"]
 
             off = nothing
-            @progress off "Off" capture=false for i in 1:3
+            @progress off "Off" capture = false io = IOBuffer() for i in 1:3
                 @info "not captured"
             end
             @test isempty(active_logs(off))
         end
     end
 
-    @testset "nested scopes capture into the innermost context" begin
+    @testset "nested scopes capture into the innermost node" begin
         outer = nothing
         inner = nothing
-        @progress outer "Outer" vanish=5.0 for i in 1:2
+        @progress outer "Outer" vanish = 5.0 io = IOBuffer() for i in 1:2
             @info "outer $i"
-            @progress inner "Inner" vanish=0.5 for j in 1:3
+            @progress inner "Inner" vanish = 0.5 for j in 1:3
                 @info "inner $i.$j"
             end
         end
@@ -201,36 +236,39 @@ end
         @test all(e -> e.vanish == 5.0, outer_entries)
         @test all(e -> !startswith(e.message, "inner"), outer_entries)
 
-        inner_ctx = ProgContext(outer.pbar, inner.parent)
-        inner_entries = active_logs(inner_ctx)
+        # the inner level rebinds its name every iteration, so this is the last one
+        inner_entries = active_logs(inner)
         @test [e.message for e in inner_entries] == ["inner 2.1", "inner 2.2", "inner 2.3"]
         @test all(e -> e.vanish == 0.5, inner_entries)
-        @test inner_ctx.pbar === outer.pbar
+        @test inner.parent === outer                # one tree: a child holds its parent
+        @test Progbiotic.root_of(inner) === outer
     end
 
     @testset "block-form scopes capture logs" begin
         blk = nothing
-        @progress blk "Block" vanish=2.0 begin
+        @progress blk "Block" vanish = 2.0 io = IOBuffer() begin
             @info "inside the block"
         end
         @test [e.message for e in active_logs(blk)] == ["inside the block"]
         @test active_logs(blk)[1].vanish == 2.0
     end
 
-    @testset "with=ctx subroutines capture into the active job" begin
+    @testset "with=ctx subroutines capture into the active node" begin
         function log_subtask(subctx, n)
-            @progress with=subctx "subtask" vanish=1.0 for k in 1:n
+            @progress with = subctx "subtask" vanish = 1.0 for k in 1:n
                 k == 1 && @info "from the subroutine"
             end
         end
-        ctx = nothing
-        @progress ctx "Outer" for i in 1:2
-            log_subtask(ctx, 2)
+        node = nothing
+        @progress node "Outer" io = IOBuffer() for i in 1:2
+            log_subtask(node, 2)
         end
-        @test isempty(active_logs(ctx))               # the outer bar owns no logs
-        subtask_ctxs = [ProgContext(ctx.pbar, c) for c in get_children(ctx.pbar, ctx.parent)]
-        @test length(subtask_ctxs) == 2
-        entries = reduce(vcat, (active_logs(sub) for sub in subtask_ctxs))
+        @test isempty(active_logs(node))            # the outer bar owns no logs
+
+        subtasks = children(node)
+        @test length(subtasks) == 2
+        @test all(sub -> sub.parent === node, subtasks)
+        entries = reduce(vcat, (active_logs(sub) for sub in subtasks))
         @test length(entries) == 2
         @test all(e -> occursin("from the subroutine", e.message), entries)
         @test all(e -> e.vanish == 1.0, entries)
@@ -238,11 +276,11 @@ end
 
     @testset "thread-safe capture under Threads.@threads" begin
         n = 200
-        ctx = nothing
-        @progress ctx "Threaded" Base.Threads.@threads for i in 1:n
+        node = nothing
+        @progress node "Threaded" io = IOBuffer() Base.Threads.@threads for i in 1:n
             @info "threaded $i"
         end
-        entries = active_logs(ctx)
+        entries = active_logs(node)
         @test length(entries) == n
         @test length(unique(e.message for e in entries)) == n
     end

@@ -1,76 +1,109 @@
 using Progbiotic
-using Logging
+using Test
 
-# ==============================================================================
-# 1. Zero-Boilerplate Iterator & Unbounded Spinner Interface
-# ==============================================================================
+# the README's feature tour, exercised end to end. every bar draws into a throwaway
+# buffer, so the tour never scribbles on the suite's output.
 
-# Inferred length from collection
-for record in prog(1:1000; desc="Parsing Records", vanish=2.0)
-    # Automatically tracks step progress and infers total=1000
-end
+@testset "features.jl" begin
+    # 1. zero-boilerplate iterator interface
+    @testset "inferred length and unbounded streams" begin
+        wrapped = prog(1:1000; desc = "Parsing Records", vanish = 2.0, io = IOBuffer())
+        @test pbtotal(wrapped) == 1000        # the length is inferred from the collection
 
-# Unbounded stream / channel (automatically displays a spinner)
-data_stream = Channel(ch -> foreach(i -> put!(ch, i), 1:500))
+        seen = 0
+        for record in wrapped
+            seen += 1
+        end
+        @test seen == 1000
+        @test pbdone(wrapped) == 1000
 
-for item in prog(data_stream; desc="Streaming Input")
-    # Spinner rotates until channel closes
-end
+        # an unbounded source has no length to infer, so it gets a spinner instead of a
+        # percentage that would be a lie
+        data_stream = Channel(ch -> foreach(i -> put!(ch, i), 1:500))
+        streamed    = prog(data_stream; desc = "Streaming Input", io = IOBuffer())
+        @test pbtotal(streamed) === nothing
 
-# ==============================================================================
-# 2. Dynamic Postfix Metrics & Dynamic Logging Sinks
-# ==============================================================================
+        items = 0
+        for item in streamed
+            items += 1
+        end
+        @test items == 500
+    end
 
-# Real-time state metrics without creating log line clutter
-@progress "Model Training" total=100 vanish=3.0 log_file="train.log" for epoch in 1:100
-    loss = 1.0 / epoch
-    acc = 0.5 + (epoch / 200)
-    
-    # Update inline key-value indicators on the active progress line
-    set_postfix!(loss=round(loss, digits=4), accuracy="$(round(acc*100, digits=1))%")
-    
-    if epoch % 25 == 0
-        # Transients show in terminal under bar for 3.0s, but permanently append to train.log
-        @info "Checkpoint saved at epoch $epoch"
+    # 2. dynamic postfix metrics and persistent log sinks
+    @testset "postfix metrics and log sinks" begin
+        log_file = joinpath(mktempdir(), "train.log")
+        bar      = Ref{Any}(nothing)
+
+        @progress "Model Training" total=100 vanish=3.0 log_file=log_file io=IOBuffer() for epoch in 1:100
+            bar[] = current_bar()
+            loss  = 1.0 / epoch
+            acc   = 0.5 + (epoch / 200)
+
+            # update inline key-value indicators on the active progress line
+            set_postfix!(loss = round(loss, digits = 4), accuracy = "$(round(acc * 100, digits = 1))%")
+
+            if epoch % 25 == 0
+                # a transient line under the bar, and a permanent one in train.log
+                @info "Checkpoint saved at epoch $epoch"
+            end
+        end
+
+        line = plain(render_frame(bar[]))
+        @test occursin("loss=", line)             # the metrics are state on the bar's line
+        @test occursin("accuracy=", line)
+
+        # the records outlive the transient lines that showed them
+        written = read(log_file, String)
+        @test occursin("[INFO] Checkpoint saved at epoch 25", written)
+        @test occursin("[INFO] Checkpoint saved at epoch 100", written)
+    end
+
+    # 3. modular column layouts
+    @testset "custom column layout" begin
+        my_layout = (
+            Spinner(:dots),
+            Tag("{desc}"),
+            Bar(; fill = '█', empty = '░', width = 36),
+            Percent(),
+            Count(),
+            Rate(unit = "it/s"),
+            Eta(),
+            Postfix(),
+        )
+
+        p = Progress(100; layout = my_layout, desc = "Custom Pipeline", vanish = 0.0,
+                     io = IOBuffer(), tty = false, start = false)
+        for i in 1:100
+            next!(p)
+        end
+        finish!(p)
+
+        line = plain(render_frame(p))
+        @test occursin("Custom Pipeline", line)
+        @test count(==('█'), line) == 36          # the layout's own bar width is used verbatim
+        @test any(frame -> occursin(frame, line), Spinner(:dots).frames)
+        @test !occursin("◉", line)                # the AMBER theme's spinner is not in this layout
+    end
+
+    # 4. a thread-safe imperative handle
+    @testset "thread-safe handle" begin
+        p = Progress(10_000; desc = "Parallel Processing", vanish = 1.0,
+                     io = IOBuffer(), tty = false, start = false)
+
+        with_progress_logging(p) do
+            Threads.@threads for i in 1:10_000
+                # one atomic add, with no lock contention and no lost update
+                next!(p)
+
+                if i == 5000
+                    # concurrent log interception: the record lands under the bar
+                    @warn "Halfway mark reached on thread $(Threads.threadid())"
+                end
+            end
+        end
+        finish!(p)
+
+        @test pbdone(p) == 10_000
     end
 end
-
-# ==============================================================================
-# 3. Modular Column Layouts & Persistent Sinks
-# ==============================================================================
-
-# Define a custom visual pipeline
-my_layout = [
-    Spinner(:dots),
-    Tag("{desc}"),
-    Bar(fill='█', empty='░', width=30),
-    Percent(),
-    Rate(unit="it/s"),
-    Eta(),
-    Postfix()
-]
-
-p = Progress(100; layout=my_layout, desc="Custom Pipeline", vanish=0.0)
-for i in 1:100
-    sleep(0.01)
-    next!(p)
-end
-finish!(p)
-
-# ==============================================================================
-# 4. Multi-threaded Parallel Execution & Imperative Handles
-# ==============================================================================
-
-# Thread-safe atomic counter updates inside Threads.@threads
-p_parallel = Progress(10_000; desc="Parallel Processing", vanish=1.0)
-
-Threads.@threads for i in 1:10_000
-    # Thread-safe increment with zero lock contention
-    next!(p_parallel)
-    
-    if i == 5000
-        # Safe concurrent log interception
-        @warn "Halfway mark reached on thread $(Threads.threadid())"
-    end
-end
-finish!(p_parallel)

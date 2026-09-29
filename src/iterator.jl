@@ -69,6 +69,7 @@ or total = nothing to force indeterminate mode.
 # keyword arguments
 
 - desc:       the bar's description.
+- theme:      the theme whose columns the bar is built from (default AMBER).
 - vanish:     seconds the finished bar (and its log lines) stays on screen.
 - total:      override the inferred total (nothing forces indeterminate).
 - layout:     a tuple of columns to draw instead of the theme's.
@@ -87,6 +88,7 @@ The two-argument form runs the whole loop inside a log-capturing scope and retur
 """
 function prog(iter;
               desc::AbstractString = "",
+              theme::Theme = AMBER,
               vanish = 1.0,
               total = _AUTO_TOTAL,
               layout = nothing,
@@ -101,7 +103,8 @@ function prog(iter;
     (resolved === nothing || resolved isa Int) ||
         throw(ProgbioticError("total must be an Int or nothing; got ", repr(resolved)))
 
-    bar = Progress(resolved; desc = desc, layout = layout, io = io, vanish = vanish,
+    bar = Progress(resolved; desc = desc, theme = theme, layout = layout, io = io,
+                   vanish = vanish,
                    fps = fps, flat_step = flat_step, tty = tty, log_file = log_file,
                    threaded = threaded)
     return ProgbioticIterator(iter, bar)

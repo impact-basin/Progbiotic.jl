@@ -133,7 +133,12 @@ filling the screen with stale bars.
 """
 function _tree_rows(root::Progress, symbols, collapse::Bool, now_sec::Float64)
     titled = !isempty(root.root.title)
-    rows   = Row[(Row(root, titled ? symbols[:term] : "", titled ? symbols[:nada] : "", 0))]
+    rows   = Row[]
+    # the root is filtered like anything else. It stays while it has children or live log
+    # lines of its own, so the only time it drops out is when the whole tree has been
+    # erased -- which is what lets a standalone bar vanish.
+    _visible(root, now_sec) &&
+        push!(rows, Row(root, titled ? symbols[:term] : "", titled ? symbols[:nada] : "", 0))
     _collect_rows!(rows, root, "", symbols, collapse, now_sec)
     return rows
 end
@@ -152,6 +157,22 @@ function _collect_rows!(rows::Vector, node::Progress, prefix::AbstractString, sy
         _collect_rows!(rows, kid, string(prefix, extension), symbols, collapse, now_sec)
     end
     return rows
+end
+
+"""
+    _all_nodes!(out, node)
+
+Every node of a tree, depth-first, whether or not it is still on screen.
+
+The append-only renderer needs this: a record captured by a bar that has since vanished
+still belongs in the log, and the visible rows are only the ones still being drawn.
+"""
+function _all_nodes!(out::Vector, node::Progress)
+    push!(out, node)
+    for kid in children(node)
+        _all_nodes!(out, kid)
+    end
+    return out
 end
 
 # whether a node's subtree is drawn: a finished node keeps final_depth levels below the
@@ -222,6 +243,7 @@ function render_tree(node::Progress; collapse::Bool = true, width::Int = 0,
                      now_sec::Float64 = time())
     symbols = get(TREE_STRS, node.root.style, TREE_STRS[:round])
     rows    = _tree_rows(node, symbols, collapse, now_sec)
+    isempty(rows) && return ""            # nothing visible: there is nothing to measure
 
     desc_width = max(_MIN_DESC_WIDTH, maximum(row -> length(row.node.state.desc[]), rows))
     bar_width  = _tree_bar_width(rows, desc_width, width)

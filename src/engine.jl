@@ -227,17 +227,16 @@ function _release_gutter!(root::Progress; keep::Bool = true)
     term_height, term_width = displaysize(io)
     buffer = IOBuffer()
 
-    if keep && term_height > 0
-        lines = _gutter_lines(root, term_height, term_width)
-        isempty(lines) ||
-            print(buffer, _at(max(1, term_height - length(lines) + 1)), join(lines, "\n"))
-    end
-    print(buffer, "\e[r")
-    if keep && term_height > 0
-        # start a fresh line under the tree that was left behind
-        print(buffer, _at(term_height), "\n")
+    lines = keep && term_height > 0 ? _gutter_lines(root, term_height, term_width) : String[]
+    if isempty(lines)
+        # the tree has gone, or was never wanted: clear the rows it was using and park
+        # where they were, so later output starts there
+        print(buffer, _at(term_height - previous + 1), "\e[J", "\e[r",
+              _at(term_height - previous + 1))
     else
-        print(buffer, _at(term_height - previous + 1), "\e[J")
+        # leave the tree behind as ordinary text and start a fresh line under it
+        print(buffer, _at(max(1, term_height - length(lines) + 1)), join(lines, "\n"))
+        print(buffer, "\e[r", _at(term_height), "\n")
     end
 
     state.rows = 0
@@ -260,8 +259,12 @@ function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec
     previous = paint.flat_pct
 
     force && return previous < 100
-    percentage < 0 && return previous < 0 || (now_sec - paint.last_flat) >= 1.0
-    previous < 0 && return true
+    # last_flat is stamped only when a line is actually written, so it is what tells a
+    # node that has never announced itself from one that is indeterminate and sitting at
+    # -1 for the whole run
+    paint.last_flat == 0.0 && return true
+    percentage < 0 &&
+        return !_completed(node) && (now_sec - paint.last_flat) >= 1.0
     percentage >= previous + node.opts.flat_step && return true
     return _completed(node) && percentage >= 100 && previous < 100
 end
@@ -282,13 +285,17 @@ function _draw_flat!(root::Progress; force::Bool = false)
     buffer  = IOBuffer()
     wrote   = false
 
-    for row in _tree_rows(root, symbols, false, now_sec)
-        node = row.node
+    # intercepted records are flushed for every node, visible or not: a bar that has
+    # already vanished from the screen still owns the lines it captured
+    for node in _all_nodes!(Progress[], root)
         for entry in pending_logs!(node, now_sec)
             print(buffer, format_plain_log_line(entry), "\n")
             wrote = true
         end
+    end
 
+    for row in _tree_rows(root, symbols, false, now_sec)
+        node = row.node
         percentage = flat_percentage(node)
         _should_emit_flat(node, percentage, force, now_sec) || continue
         node.paint.flat_pct  = percentage
@@ -459,16 +466,34 @@ function finish!(node::Progress; wait::Bool = !node.opts.tty)
     total !== nothing && (state.current[] = total)
     state.last_update = time()
     state.finish[] == 0 && (state.finish[] = time())
-    node.paint.completed_at == 0.0 && (node.paint.completed_at = time())
+    # completed_at is deliberately left alone: the renderer stamps it on the tick that
+    # first sees the node finished, and that same tick is the one that draws it. Stamping
+    # here would mean a node with vanish = 0.0 was already gone before its final frame.
+
+    # the final frame is drawn here rather than left to the task, so it lands whatever the
+    # node's vanish timeout is: with vanish = 0.0 the task could already consider the tree
+    # gone by the time it next woke up. A second draw is harmless -- the flat renderer
+    # dedupes on the percentage it last announced, and the gutter is ours to redraw.
+    render_tick!(top; force = true)
 
     if task === nothing
-        # nothing is rendering this tree, so the final frame has to be drawn here
-        render_tick!(top; force = true)
         _close_log_sink!(top.root)
     elseif wait
         _wait_quietly(task)
     end
-    return nothing
+    return _release_empty_gutter!(top)
+end
+
+# hand the gutter back when it is still reserved but has nothing left to show.
+#
+# the final frame above can redraw a gutter the render task had already released: a node
+# with vanish = 0.0 is erased on the very tick that notices it finished, and if that tick
+# won the race there is nothing running afterwards to erase the frame drawn here. This is
+# the reconciliation, and it is a no-op in the ordinary case where the tree is still there.
+function _release_empty_gutter!(root::Progress)
+    (root.root.rows == 0 || !root.opts.tty) && return nothing
+    isempty(_gutter_lines(root, displaysize(root.io)...)) || return nothing
+    return _release_gutter!(root)
 end
 
 """

@@ -350,7 +350,7 @@ function _build_progress_level(m_args, parent,
     is_block = body_expr isa Expr && body_expr.head == :block
     is_loop = for_expr !== nothing &&
         (@capture(for_expr, for var_ = iter_ body_ end) || @capture(for_expr, for var_ in iter_ body_ end))
-    # A bare `@progress "desc"` statement has no loop/block body: all args are config.
+    # a bare `@progress "desc"` statement has no loop/block body: all args are config.
     opts = _parse_progress_args(is_loop || is_block ? cfg_args : m_args)
 
     # inherit vanishing behaviour from the enclosing @progress level.
@@ -413,7 +413,9 @@ function _build_progress_level(m_args, parent,
     if opts[:with] !== nothing
         # evaluate the context once, check it, and run the level's code against it.
         guard = :($ctxv isa Progbiotic.Progress ||
-                  error("@progress: `with=` expects a bar, e.g. one bound by the caller's @progress; got ", repr($ctxv)))
+                  throw(Progbiotic.ProgbioticError(
+                      "@progress: `with=` expects a bar, e.g. one bound by the caller's ", 
+                      "@progress; got ", repr($ctxv))))
         block = quote
             let $ctxv = $(opts[:with])
                 $guard
@@ -525,9 +527,9 @@ Finished milestones are kept on screen by `final_depth` (e.g. `d=1` above).
 # contexts and subroutines
 
 A context can be bound with `(ctx => "desc")` or a bare symbol as the first
-argument (`@progress ctx "desc"`). The bound context automatically tracks the
-innermost running job inside nested `@progress` levels and is restored afterwards,
-so it can be passed to subroutines:
+argument (`@progress ctx "desc"`). A context *is* a bar -- the node the macro made --
+and it automatically tracks the innermost running node inside nested `@progress`
+levels, restored afterwards, so it can be passed to subroutines:
 
     function subtask(ctx, n)
         @progress with=ctx "working..." for k in 1:n
@@ -541,15 +543,15 @@ so it can be passed to subroutines:
         end
     end
 
-`with=ctx` registers the job under the job `ctx` points at, on the same `ProgBar`
-(no new gutter). The context is also scoped-rebound to the new job inside its body,
+`with=ctx` registers the new bar under the one `ctx` points at, in the same tree
+(no new gutter). The context is also scoped-rebound to the new node inside its body,
 so deeper calls thread further, and restored afterwards.
 
 # syntax
 - `@progress "Description" for ...`
 - `@progress ("Description", THEME) for ...`
-- `@progress (pbar => THEME) for ...`  (binds `pbar` to a `ProgContext`)
-- `@progress (pbar => ("Description", THEME)) for ...`
+- `@progress (bar => THEME) for ...`  (binds `bar` to the node the macro made)
+- `@progress (bar => ("Description", THEME)) for ...`
 - `@progress ("Description", THEME, vanish_timeout=1.0) for ...`
 - `@progress "Description"`  (a named subtask; no body)
 - `@progress ctx "Description" for ...`  (binds `ctx`; shorthand for `(ctx => ...)`)
@@ -594,8 +596,8 @@ These options are inherited by nested `@progress` levels unless overridden.
 # log capture
 
 `@info`, `@debug`, `@warn` and `@error` calls inside a `@progress` scope are
-intercepted and drawn underneath the bar of the innermost active job, then pruned
-once that scope's `vanish` timeout elapses:
+intercepted and drawn underneath the bar of the innermost active node, then pruned
+once that node's `vanish` timeout elapses:
 
     @progress "Ingesting" total=100 vanish=2.0 for i in 1:100
         i % 25 == 0 && @info "checkpoint at record \$i"
@@ -674,10 +676,15 @@ scope, while `child_vanish = 0.5` is what its children get when they ask for non
 own.
 """
 function _root_bar(total, title, final_depth, log_file, io;
-                   vanish = nothing, vanish_timeout = nothing, kwargs...)
-    return Progress(total; title = title, final_depth = final_depth, child_vanish = 0.5,
+                   desc::AbstractString = "", theme::Theme = AMBER, kind::Symbol = :bar,
+                   vanish = nothing, vanish_timeout = nothing, width::Integer = 0,
+                   spinner = nothing, barunits = nothing, empty = nothing,
+                   caps = nothing, head = nothing)
+    return Progress(total; desc = desc, kind = kind, title = title,
+                    final_depth = final_depth, child_vanish = 0.5, width = width,
+                    theme = _apply_style(theme, spinner, barunits, empty, caps, head),
                     vanish = vanish, vanish_timeout = vanish_timeout,
-                    log_file = log_file, io = io === nothing ? stdout : io, kwargs...)
+                    log_file = log_file, io = io === nothing ? stdout : io)
 end
 
 """

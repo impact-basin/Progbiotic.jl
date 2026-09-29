@@ -52,7 +52,7 @@ end
         update!(bar, 999)
         @test pbdone(bar) == 10
         finish!(bar; wait = true)
-        @test isfinished(bar.ctx.state)
+        @test isfinished(bar.state)
         @test occursin("finished", sprint(show, bar))
         # finishing twice is harmless
         finish!(bar; wait = true)
@@ -64,7 +64,7 @@ end
                        vanish = 0.0, start = false)
         @test pbtotal(bar) === nothing
         next!(bar)
-        frame = render_frame(bar.ctx)
+        frame = render_frame(bar)
         @test occursin("watching", frame)
         @test !occursin("%", frame)
         update!(bar, 7)
@@ -80,7 +80,7 @@ end
             end
         end
         @test collected == collect(1:5)
-        @test isfinished(bar.ctx.state)
+        @test isfinished(bar.state)
 
         seen = 0
         other = withprogress(3; io = IOBuffer(), vanish = 0.0) do p
@@ -112,14 +112,14 @@ end
         end
         finish!(bar2; wait = true)
         @test pbdone(bar2) == n
-        @test occursin("thread=", Progbiotic.postfix_text(bar2.ctx.state))
+        @test occursin("thread=", Progbiotic.postfix_text(bar2.state))
         # one entry for the key, overwritten each time, not one per call
-        @test length(bar2.ctx.state.postfix[]) == 1
+        @test length(bar2.state.postfix[]) == 1
     end
 
     @testset "the render task is frame-rate limited" begin
         counter = CountingColumn()
-        bar = Progress(10_000; layout = [counter], io = IOBuffer(), tty = true,
+        bar = Progress(10_000; layout = (counter,), io = IOBuffer(), tty = true,
                        fps = 20.0, vanish = 0.0)
         started = time()
         while time() - started < 0.25
@@ -134,7 +134,7 @@ end
         @test counter.frames[] >= 2
     end
 
-    @testset "tty drawing and vanishing" begin
+    @testset "the gutter is drawn, then erased or left behind" begin
         buffer = IOBuffer()
         bar = Progress(10; desc = "tty", io = buffer, tty = true, fps = 100.0, vanish = 0.0)
         for _ in 1:10
@@ -142,19 +142,27 @@ end
         end
         finish!(bar; wait = true)
         output = String(take!(buffer))
-        @test occursin("\e[", output)
-        @test occursin("100.0%", output)
-        # vanish = 0.0 erases the finished block again
-        @test bar.ctx.rendered_lines == 0
 
-        kept = Progress(10; desc = "kept", io = IOBuffer(), tty = true,
-                        fps = 100.0, vanish = false)
+        @test occursin("\e[", output)                  # stored in a scroll region
+        @test occursin("\e[1;", output) && occursin("r", output)
+        @test occursin("100%", output)
+        # vanish = 0.0 erases it again: the last time the gutter was cleared, nothing was
+        # drawn back over it, so the bar is gone from the screen
+        @test !occursin('◉', last(split(output, "\e[J")))
+        @test bar.root.rows == 0
+
+        kept = IOBuffer()
+        other = Progress(10; desc = "kept", io = kept, tty = true, fps = 100.0,
+                         vanish = false)
         for _ in 1:10
-            next!(kept)
+            next!(other)
         end
-        finish!(kept; wait = true)
-        # vanish = false means the finished bar stays on screen
-        @test kept.ctx.rendered_lines > 0
+        finish!(other; wait = true)
+        left = String(take!(kept))
+        # vanish = false hands the terminal back with the finished tree still on it, as
+        # ordinary text with the cursor on a fresh line below
+        @test occursin('◉', last(split(left, "\e[J")))
+        @test endswith(left, "\n")
     end
 
     @testset "atomic advance keeps a fine-grained loop cheap" begin

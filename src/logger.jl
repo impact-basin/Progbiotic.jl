@@ -3,7 +3,7 @@
 #
 # records are *intercepted* by a ProgbioticLogger installed for a scope, buffered on the
 # node they belong to, and pruned once they are older than that node's vanish timeout.
-# When the scope was given a log_file, every record is also appended, permanently and in
+# when the scope was given a log_file, every record is also appended, permanently and in
 # plain text, to that sink: a transient line on the screen, a durable line on disk.
 
 # ---------------------------------------------------------------------------
@@ -260,7 +260,10 @@ everything the scope captured.
 function pending_logs!(node::Progress, now_sec::Float64 = time())
     buf = node.logs
     return @lock buf.lock begin
-        _prune_buffer!(buf.entries, now_sec)
+        # nothing is pruned here on purpose. In a file the vanish timeout is beside the
+        # point: a record that was captured belongs in the log whatever its screen
+        # lifetime, and a bar built with vanish = 0.0 would otherwise swallow every line
+        # it ever intercepted.
         pending = LogEntry[]
         for entry in buf.entries
             entry.printed && continue
@@ -278,9 +281,11 @@ Whether the bar currently has at least one non-expired log line.
 """
 function has_active_logs(node::Progress, now_sec::Float64 = time())
     buf = node.logs
+    # a pure query: it deliberately does not prune. The renderer asks this while deciding
+    # what is visible, and in the append-only mode a record that is about to be written to
+    # the log has to survive being asked about.
     return @lock buf.lock begin
-        _prune_buffer!(buf.entries, now_sec)
-        !isempty(buf.entries)
+        any(entry -> !_expired(entry, now_sec), buf.entries)
     end
 end
 

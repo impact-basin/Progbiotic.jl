@@ -454,10 +454,12 @@ function child(parent::Progress, total::Union{Int, Nothing} = nothing;
     node = _node(total, desc, _apply_style(theme, spinner, barunits, empty, caps, head),
                  layout, opts, kind, parent.io, parent, root)
 
-    @lock root.lock push!(parent.children, node)
     # registering a subtask finishes the parent's previous milestone, so only one of them
-    # ever reads as running at a time
-    _complete_statement_jobs!(parent)
+    # ever reads as running at a time. The list is taken *before* the push: the milestone
+    # being registered is only just starting, and must not close itself.
+    pending = _pending_milestones(parent)
+    @lock root.lock push!(parent.children, node)
+    _finish_milestones!(parent, pending)
     return node
 end
 
@@ -496,7 +498,15 @@ its own, so it is done when the next sibling registers or when its enclosing sco
 which is what makes `@progress "step"` a statement about the work that follows it.
 """
 function _complete_statement_jobs!(parent::Progress)
-    pending = [kid for kid in children(parent) if ismilestone(kid) && !_completed(kid)]
+    return _finish_milestones!(parent, _pending_milestones(parent))
+end
+
+"""The milestones under a node that have not finished yet."""
+_pending_milestones(parent::Progress) =
+    [kid for kid in children(parent) if ismilestone(kid) && !_completed(kid)]
+
+# close a set of milestones, and tell their container how far along it is
+function _finish_milestones!(parent::Progress, pending::Vector)
     isempty(pending) && return nothing
 
     now_sec = time()
@@ -546,7 +556,10 @@ function Base.show(io::IO, node::Progress)
     state = node.state
     print(io, "Progress(", repr(state.desc[]), ", ",
           state.total === nothing ? "indeterminate" :
-                                    string(pbdone(state), "/", state.total),
-          ", ", length(node.children), " children, ", node.kind, ")")
+                                    string(pbdone(state), "/", state.total), ", ",
+          isfinished(state) ? "finished" : "running")
+    node.kind === :bar || print(io, ", ", node.kind)
+    isempty(node.children) || print(io, ", ", length(node.children), " children")
+    print(io, ")")
 end
 

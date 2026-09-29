@@ -29,7 +29,7 @@ include("bar.jl")
 export BarState
 export pbdone, pbtotal, pbfraction, pbrate, pbeta, pbelapsed, pbruntime, isfinished
 export Progress
-export child, children
+export child, children, root_of, node_depth
 
 # --- the columns -------------------------------------------------------------
 include("columns.jl")

@@ -24,26 +24,26 @@ That looks like this:
 
 ```julia
 # tqdm-like!
-for i in ProgJob(1:100; desc = "Ordinary")
+for i in prog(1:100; desc = "Ordinary")
     sleep(0.1)
 end
 
 # thread-safe!
-@threads for i in ProgJob(1:100; desc = "Multithreaded")
+@threads for i in prog(1:100; desc = "Multithreaded")
     sleep(0.1)
 end
 
 # themeable!
 files = ["data1.csv", "data2.csv", "data3.csv", "data4.csv"]
-for file in ProgJob(files, OCEAN; desc = "Parsing files")
+for file in prog(files; theme = OCEAN, desc = "Parsing files")
     sleep(0.3)
 end
 
 # works with comprehensions!
-[x^2 for x in ProgJob(1:9001, GLACIER; desc = "Squaring")];
+[x^2 for x in prog(1:9001; theme = GLACIER, desc = "Squaring")];
 
 # comprehensions over matrices!
-[x^2 for x in ProgJob(rand(32,32), GLACIER; desc = "Squaring matrix elements!")]
+[x^2 for x in prog(rand(32,32); theme = GLACIER, desc = "Squaring matrix elements!")]
 ```
 
 ## Iterator interface (no macro required)
@@ -178,13 +178,13 @@ finish!(p)
 | Column | Renders |
 |--------|---------|
 | `Spinner(style)` | an animated glyph; styles include :dots, :line, :arc, :clock, :moon |
-| `Tag(template)` | `{desc}`, `{n}`, `{total}`, `{pct}`, `{elapsed}`, `{postfix}`; takes a `width` to pad to |
+| `Tag(template)` | `{desc}`, `{n}`, `{total}`, `{pct}`, `{elapsed}`, `{postfix}`; takes a `width` to pad to and `bold` |
 | `Bar(; fill, empty, width)` | the bar, or a bouncing marquee when the total is unknown |
 | `Bar(units, empty, palette, caps, head)` | the themed bar: stipple glyphs, a palette interpolated along the fill, a tip glyph |
-| `Percent(digits)` | `45.2%` |
-| `Count()` | `(42/100)` |
-| `Rate(unit)` | `12.3 it/s`, or `1.5 s/it` below one item per second |
-| `Eta()` | `ETA 00:01:23` |
+| `Percent(digits; pad)` | `45.2%`; the theme uses `digits = 0, pad = 3` for ` 45%` |
+| `Count()` | `(42/100)`, the count padded to the total's width; `1 unit` when there is no total |
+| `Rate(unit; pad)` | `[12.3 it/s]`, or `[1.5 s/it]` below one item per second; empty at a rate of zero |
+| `Eta()` | `ETA: 1.23s` running, `done in 2.51s` finished, `(elapsed: 4.10s)` indeterminate |
 | `Postfix()` | the metrics set by `set_postfix!` |
 
 The label column is `Tag`, not `Text`: Base already owns that name.
@@ -225,9 +225,8 @@ The screen shows the checkpoints for two seconds; `ingest.log` keeps them:
 [INFO] checkpoint at record 100
 ```
 
-The same option is accepted by `prog` and `Progress`, and by the
-`ProgBar` constructor. `log_file` may be a path (opened in append mode and
-closed when the bar is torn down) or any `IO` you own.
+The same option is accepted by `prog` and `Progress`. `log_file` may be a path
+(opened in append mode and closed when the scope is torn down) or any `IO` you own.
 
 ## Capturing logs outside the macro
 
@@ -272,16 +271,19 @@ bar instead of producing a line, and `ProgressLogging.jl` is not a dependency.
 ## Terminal vs. CI
 
 The engine detects whether its output stream is an interactive terminal (and whether
-`CI` is set). On a terminal it redraws the bar in place with ANSI cursor control
-and draws transient log lines underneath it. Anywhere else - a pipe, a redirected
-file, a CI build - it emits flat, append-only lines and *not a single escape
-sequence*:
+`CI` is set). On a terminal the bar tree lives in a gutter reserved at the bottom of
+the screen, behind a scroll region, so your own `println` output scrolls *above* it
+instead of being overwritten by the next frame. When the tree grows, the engine
+scrolls to make room rather than clearing, so the output already on screen is pushed
+up intact; when it shrinks or finishes, the rows go back. Anywhere else - a pipe, a
+redirected file, a CI build - it emits flat, append-only lines and *not a single
+escape sequence*:
 
 ```text
-[INFO] Parsing Records 0% (0/1000)
-[INFO] Parsing Records 25% (250/1000) 412.5 it/s ETA 00:00:01
+[INFO] Parsing Records 0% (0/1000) ETA: N/A
+[INFO] Parsing Records 25% (250/1000) [412.5 it/s] ETA: 730.3ms
 [INFO] checkpoint at record 500
-[INFO] Parsing Records 100% (1000/1000) 398.1 it/s ETA 00:00:00
+[INFO] Parsing Records 100% (1000/1000) [398.1 it/s] done in 2.51s
 ```
 
 One line is emitted per `flat_step` percent (default 10), so a ten-million-iteration
@@ -440,9 +442,9 @@ end
 `capture=` (alias `capture_logs=`) accepts `true` (the default — every level),
 `false` (nothing is captured), a `LogLevel`, or a collection such as
 `[:warn, :error]`. The option is inherited by nested `@progress` levels unless
-overridden. Intercepted records are buffered per job in `pbar.logs`, and the
+overridden. Intercepted records are buffered on the bar they belong to, and the
 `push_log!`, `prune_logs!` and `active_logs` functions are exported for working
-with a `ProgContext` (or `ProgBar`) directly.
+with a bar directly.
 
 # Notes
 
@@ -456,8 +458,9 @@ with a `ProgContext` (or `ProgBar`) directly.
 - Bare `@progress "desc"` statements are "milestones", which report elapsed time.
   A `@progress begin ... end` block with milestones has a total equal to the number
   of milestones, and its progress advances as each milestone completes.
-- `@progress ctx "desc"` binds `ctx` to the new job. This can be passed to helper
-  functions, which can register their own progress: `@progress "desc" with=ctx for ...`.
+- `@progress ctx "desc"` binds `ctx` to the new bar, which is a node in the tree.
+  It can be passed to helper functions, which can register their own progress:
+  `@progress "desc" with=ctx for ...`.
 
 # AI use.
 

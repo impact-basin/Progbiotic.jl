@@ -1,14 +1,11 @@
 using Progbiotic
 using Test
 
-# A throwaway bar: no terminal, nothing lingering, so a test can never leave a
-# render task behind or scribble on the suite's output.
-sink() = IOBuffer()
 
 @testset "iterator.jl" begin
     @testset "prog over a range infers its total" begin
         it = prog(1:100; desc = "range", io = sink(), vanish = 0.0)
-        @test it.ctx.state.total == 100
+        @test it.bar.state.total == 100
         @test length(it) == 100
         @test eltype(it) == Int
         @test collect(prog(1:5; io = sink(), vanish = 0.0)) == collect(1:5)
@@ -29,7 +26,7 @@ sink() = IOBuffer()
 
         generator = (i * 2 for i in 1:10)
         it = prog(generator; io = sink(), vanish = 0.0)
-        @test it.ctx.state.total == 10
+        @test it.bar.state.total == 10
         @test sum(it) == sum(2:2:20)
     end
 
@@ -40,7 +37,7 @@ sink() = IOBuffer()
             end
         end
         it = prog(channel; desc = "stream", io = sink(), vanish = 0.0)
-        @test it.ctx.state.total === nothing
+        @test it.bar.state.total === nothing
         @test Base.IteratorSize(typeof(it)) isa Base.SizeUnknown
         total = 0
         for item in it
@@ -49,21 +46,21 @@ sink() = IOBuffer()
         @test total == sum(1:25)
 
         filtered = prog(Iterators.filter(iseven, 1:20); io = sink(), vanish = 0.0)
-        @test filtered.ctx.state.total === nothing
+        @test filtered.bar.state.total === nothing
         @test sum(filtered) == sum(2:2:20)
     end
 
     @testset "total and layout can be overridden" begin
         forced = prog(1:10; total = 500, io = sink(), vanish = 0.0)
-        @test forced.ctx.state.total == 500
+        @test forced.bar.state.total == 500
         finish!(forced)
 
         indeterminate = prog(1:10; total = nothing, io = sink(), vanish = 0.0)
-        @test indeterminate.ctx.state.total === nothing
+        @test indeterminate.bar.state.total === nothing
         finish!(indeterminate)
 
-        custom = prog(1:3; layout = [Tag("{n}/{total}")], io = sink(), vanish = 0.0)
-        @test length(custom.ctx.layout) == 1
+        custom = prog(1:3; layout = (Tag("{n}/{total}"),), io = sink(), vanish = 0.0)
+        @test length(custom.bar.layout) == 1
         finish!(custom)
     end
 
@@ -71,8 +68,8 @@ sink() = IOBuffer()
         it = prog(1:37; io = sink(), vanish = 0.0)
         for _ in it
         end
-        @test it.ctx.state.current[] == 37
-        @test Progbiotic.isfinished(it.ctx.state)
+        @test it.bar.state.current[] == 37
+        @test Progbiotic.isfinished(it.bar.state)
     end
 
     @testset "do-block form captures logs and finishes the bar" begin
@@ -109,7 +106,7 @@ sink() = IOBuffer()
         @test seen == collect(1:200)
         # Threads.@threads reads indexable collections with getindex, which has to
         # advance the bar just like iterate does
-        @test wrapped.ctx.state.current[] == 200
+        @test wrapped.bar.state.current[] == 200
         finish!(wrapped)
     end
 
