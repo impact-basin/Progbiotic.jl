@@ -90,6 +90,23 @@ using Test
         @test s2.desc[] == "filled"
     end
 
+    @testset "a snapshot does not move under the line being built" begin
+        s = BarState(10; desc = "live")
+        s.current[] = 3
+        Progbiotic._merge_postfix!(s; loss = 0.5)
+
+        snap = Progbiotic._snapshot(s)
+        s.current[] = 9
+        s.finish[] = time()
+        Progbiotic._merge_postfix!(s; loss = 0.9)
+
+        @test pbdone(snap) == 3
+        @test !isfinished(snap)
+        @test Progbiotic.postfix_text(snap) == "loss=0.5"
+        @test pbdone(s) == 9
+        @test isfinished(s)
+    end
+
     @testset "readers forward through a handle" begin
         bar = Progress(10; io = IOBuffer(), vanish = 0.0)
         @test pbtotal(bar) == 10

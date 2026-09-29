@@ -130,6 +130,23 @@ macro state_methods(T)
 end
 
 """
+    _snapshot(state::BarState) -> BarState
+
+A copy of a bar's state as it stands at this moment.
+
+A line reads several fields and a worker thread can move them between two reads, which is
+enough for one line to contradict itself: a percentage from before the work finished beside
+a "done in" from after. A line is rendered from one of these instead, so what it says is one
+moment. The lock is shared rather than copied; only the values are frozen.
+"""
+function _snapshot(state::BarState)
+    postfix = @lock state.lock copy(state.postfix[])
+    return BarState(Threads.Atomic{Int}(state.current[]), state.total, state.start,
+                    Threads.Atomic{Float64}(state.finish[]), state.last_update,
+                    Ref(state.desc[]), Ref(postfix), state.lock)
+end
+
+"""
     _merge_postfix!(s::BarState; kwargs...) -> BarState
 
 Merge keyword metrics into a bar's postfix, rendering each value to text now rather

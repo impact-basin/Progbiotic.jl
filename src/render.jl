@@ -55,9 +55,12 @@ with empty columns dropped. Pure: it reads the atomics and returns a string.
 Pass a width for the bar, or nothing to let the node and its theme decide.
 """
 function render_line(node::Progress, desc_width::Int = 0, width::Union{Int, Nothing} = nothing)
+    # one moment for the whole line, so its columns cannot contradict each other
+    state = _snapshot(node.state)
+
     parts = String[]
     for column in node_layout(node, desc_width, _line_width(node, width))
-        text = render_column(column, node.state)
+        text = render_column(column, state)
         isempty(text) || push!(parts, text)
     end
     return join(parts, " ")
@@ -325,7 +328,7 @@ per node, so the padding is inert rather than wrong; giving the flat mode its ow
 rendering of a column would be a second thing to keep in step.
 """
 function render_flat_line(node::Progress, depth::Int = 0)
-    state  = node.state
+    state  = _snapshot(node.state)
     label  = isempty(state.desc[]) ? "Progress" : state.desc[]
     indent = repeat("  ", depth)
 
