@@ -72,7 +72,7 @@ sink() = IOBuffer()
         for _ in it
         end
         @test it.ctx.state.current[] == 37
-        @test Progbiotic.progress_finished(it.ctx.state)
+        @test Progbiotic.isfinished(it.ctx.state)
     end
 
     @testset "do-block form captures logs and finishes the bar" begin

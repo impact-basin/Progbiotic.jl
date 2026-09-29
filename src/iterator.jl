@@ -29,6 +29,10 @@ end
 """The progress bar a wrapped collection is drawing into."""
 progress_context(it::ProgbioticIterator) = it.ctx
 
+stateof(it::ProgbioticIterator) = it.ctx.state
+
+@state_methods ProgbioticIterator
+
 """
     infer_total(iter) -> Union{Int, Nothing}
 

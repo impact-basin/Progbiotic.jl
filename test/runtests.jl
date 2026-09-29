@@ -71,6 +71,7 @@ using Test
         @test sub_counter == 6
     end
 
+    include("bar.jl")
     include("iterator.jl")
     include("columns.jl")
     include("imperative.jl")

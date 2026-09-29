@@ -2,7 +2,7 @@
 #
 # Every column is a tiny immutable value implementing
 #
-#     render_column(col::MyColumn, state::ProgressState) -> String
+#     render_column(col::MyColumn, state::BarState) -> String
 #
 # and layouts are just vectors of them, composed left-to-right by the engine.  This
 # replaces the hard-coded single-line format of the original renderer: a user can
@@ -122,7 +122,7 @@ end
 # Frames advance at a fixed rate; 12 Hz reads as motion without being distracting.
 const _SPINNER_HZ = 12.0
 
-function render_column(col::SpinnerColumn, state::ProgressState)
+function render_column(col::SpinnerColumn, state::BarState)
     frames = col.frames
     index = mod(floor(Int, time() * _SPINNER_HZ), length(frames)) + 1
     return frames[index]
@@ -156,16 +156,16 @@ struct TextColumn <: AbstractColumn
     TextColumn(; template::AbstractString = "{desc}") = new(String(template))
 end
 
-function render_column(col::TextColumn, state::ProgressState)
+function render_column(col::TextColumn, state::BarState)
     text = col.template
     occursin("{desc}", text)    && (text = replace(text, "{desc}" => state.desc[]))
     occursin("{n}", text)       && (text = replace(text, "{n}" => string(state.current[])))
     occursin("{total}", text)   && (text = replace(text, "{total}" =>
         state.total === nothing ? "" : string(state.total)))
     occursin("{pct}", text)     && (text = replace(text, "{pct}" =>
-        state.total === nothing ? "" : string(round(100 * progress_fraction(state), digits = 1))))
+        state.total === nothing ? "" : string(round(100 * pbfraction(state), digits = 1))))
     occursin("{elapsed}", text) && (text = replace(text, "{elapsed}" =>
-        _format_hms(progress_runtime(state))))
+        _format_hms(pbruntime(state))))
     occursin("{postfix}", text) && (text = replace(text, "{postfix}" => postfix_text(state)))
     return strip(text)
 end
@@ -197,9 +197,9 @@ end
 # Marquee speed, in track positions per second.
 const _MARQUEE_HZ = 10.0
 
-function render_column(col::BarColumn, state::ProgressState)
+function render_column(col::BarColumn, state::BarState)
     width = col.width
-    fraction = progress_fraction(state)
+    fraction = pbfraction(state)
 
     if fraction === nothing
         block = max(1, width ÷ 4)
@@ -235,8 +235,8 @@ struct PercentageColumn <: AbstractColumn
     PercentageColumn(; digits::Int = 1) = new(max(0, digits))
 end
 
-function render_column(col::PercentageColumn, state::ProgressState)
-    fraction = progress_fraction(state)
+function render_column(col::PercentageColumn, state::BarState)
+    fraction = pbfraction(state)
     fraction === nothing && return ""
     value = 100 * fraction
     text = col.digits == 0 ? string(round(Int, value)) : string(round(value, digits = col.digits))
@@ -262,8 +262,8 @@ struct RateColumn <: AbstractColumn
     RateColumn(; unit::AbstractString = "it/s") = new(String(unit))
 end
 
-function render_column(col::RateColumn, state::ProgressState)
-    return _format_rate(progress_rate(state), col.unit)
+function render_column(col::RateColumn, state::BarState)
+    return _format_rate(pbrate(state), col.unit)
 end
 
 # ---------------------------------------------------------------------------
@@ -279,8 +279,8 @@ once the bar is complete.
 """
 struct ETAColumn <: AbstractColumn end
 
-function render_column(::ETAColumn, state::ProgressState)
-    eta = progress_eta(state)
+function render_column(::ETAColumn, state::BarState)
+    eta = pbeta(state)
     eta === nothing && return ""
     return string("ETA ", _format_hms(eta))
 end
@@ -288,18 +288,6 @@ end
 # ---------------------------------------------------------------------------
 # PostfixColumn
 # ---------------------------------------------------------------------------
-
-"""
-    postfix_text(state::ProgressState; separator = ", ") -> String
-
-Render the dynamic metrics as key=value pairs, in the order the keys were first set
-so the display never shuffles under the user's eyes.
-"""
-function postfix_text(state::ProgressState; separator::AbstractString = ", ")
-    pairs = _postfix_pairs(state)
-    isempty(pairs) && return ""
-    return join((string(k, "=", v) for (k, v) in pairs), separator)
-end
 
 """
     PostfixColumn(separator::String = ", ") -> PostfixColumn
@@ -317,7 +305,7 @@ struct PostfixColumn <: AbstractColumn
     PostfixColumn(; separator::AbstractString = ", ") = new(String(separator))
 end
 
-function render_column(col::PostfixColumn, state::ProgressState)
+function render_column(col::PostfixColumn, state::BarState)
     text = postfix_text(state; separator = col.separator)
     isempty(text) && return ""
     return string("[", text, "]")

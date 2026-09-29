@@ -4,7 +4,7 @@
 #
 #   * AbstractColumn   - the pluggable rendering interface (src/columns.jl);
 #   * LogEntry         - one intercepted log record (src/logger.jl);
-#   * ProgressState    - the lock-free, atomic progress counters;
+#   * BarState         - the atomic progress counters (src/bar.jl);
 #   * ProgressContext  - a state bound to a layout, a stream and a render task.
 #
 # Nothing here performs I/O; src/engine.jl owns every terminal interaction.
@@ -25,8 +25,8 @@
 
 Supertype of every progress-bar column.
 
-A column is a small, stateless value that knows how to turn a ProgressState into
-one string.  Columns are composed into a Vector{AbstractColumn} (a *layout*) and
+A column is a small, stateless value that knows how to turn a BarState into one
+string. Columns are composed into a Vector{AbstractColumn} (a *layout*) and
 joined with single spaces by the renderer, so a layout reads left-to-right like the
 bar it draws:
 
@@ -35,7 +35,7 @@ bar it draws:
 
 Implementations must define
 
-    render_column(col::MyColumn, state::ProgressState) -> String
+    render_column(col::MyColumn, state::BarState) -> String
 
 Columns must be cheap to render (the engine calls them up to 20 times a second) and
 must never block: they only read the atomic progress state.
@@ -43,7 +43,7 @@ must never block: they only read the atomic progress state.
 abstract type AbstractColumn end
 
 """
-    render_column(col::AbstractColumn, state::ProgressState) -> String
+    render_column(col::AbstractColumn, state::BarState) -> String
 
 Render one column of a progress line.  This is the extension point for custom
 columns: subtype AbstractColumn and add a method.
@@ -94,111 +94,6 @@ Base.show(io::IO, e::LogEntry) = print(io, "LogEntry(", e.level, ", ", repr(e.me
 _expired(e::LogEntry, now_sec::Float64, vanish::Float64) = (now_sec - e.created_at) > vanish
 
 # ---------------------------------------------------------------------------
-# Progress state
-# ---------------------------------------------------------------------------
-
-"""
-    ProgressState(total = nothing; desc = "") -> ProgressState
-
-The mutable, shared state of a single progress bar.
-
-The counter itself is a Threads.Atomic{Int}, so that advancing it is a single
-lock-free atomic_add!.  That is the property which lets a Threads.@threads loop
-advance one bar from every worker without lock contention, and which keeps the
-overhead of a fine-grained loop in the noise.
-
-A total of nothing means *indeterminate*: the length of the work is unknown (an
-unbounded channel, an iterator with SizeUnknown), so the bar renders a spinner and
-a marquee instead of a percentage and an ETA.
-
-Only the description and the postfix metrics ever change after construction, and
-each of those is a Base.RefValue updated under the state lock.
-"""
-mutable struct ProgressState
-    # Number of completed units.  Only ever touched through atomics.
-    current        :: Threads.Atomic{Int}
-    # Total units, or nothing for an indeterminate bar.
-    total          :: Union{Int, Nothing}
-    # time() at which the bar started.
-    start          :: Float64
-    # time() at which the bar finished, or 0.0 while still running.
-    finish         :: Float64
-    # time() of the most recent advance, used for rate and ETA.
-    last_update    :: Float64
-    # Bar description, e.g. "Parsing Records".
-    desc           :: Base.RefValue{String}
-    # Dynamic key/value metrics, e.g. Dict(:loss => 0.041).
-    postfix        :: Base.RefValue{Dict{Symbol, Any}}
-    # Insertion order of the postfix keys, so the rendered order stays stable.
-    postfix_order  :: Base.RefValue{Vector{Symbol}}
-    # Guards updates to the description and the postfix metrics.
-    lock           :: ReentrantLock
-end
-
-function ProgressState(total::Union{Int, Nothing} = nothing; desc::AbstractString = "")
-    now = time()
-    return ProgressState(Threads.Atomic{Int}(0), total, now, 0.0, now,
-                         Ref(String(desc)), Ref(Dict{Symbol, Any}()),
-                         Ref(Symbol[]), ReentrantLock())
-end
-
-"""Number of completed units, read atomically."""
-progress_current(s::ProgressState) = s.current[]
-
-"""
-    progress_fraction(s) -> Union{Float64, Nothing}
-
-Completed fraction in [0, 1], or nothing when the bar is indeterminate.
-"""
-function progress_fraction(s::ProgressState)
-    s.total === nothing && return nothing
-    s.total <= 0 && return 1.0
-    return clamp(s.current[] / s.total, 0.0, 1.0)
-end
-
-"""
-    progress_elapsed(s) -> Float64
-
-Seconds of *work* elapsed.  Measured up to the last observed advance (or up to
-completion), so rate and ETA freeze while a bar sits idle waiting on a nested job
-rather than decaying towards zero.
-"""
-function progress_elapsed(s::ProgressState)
-    work_until = s.finish ≈ 0.0 ? s.last_update : s.finish
-    return max(0.0, work_until - s.start)
-end
-
-"""Wall-clock seconds since the bar started (frozen once it finishes)."""
-function progress_runtime(s::ProgressState)
-    s.finish ≈ 0.0 && return max(0.0, time() - s.start)
-    return max(0.0, s.finish - s.start)
-end
-
-"""Items per second, or zero when not enough time has passed to measure."""
-function progress_rate(s::ProgressState)
-    elapsed = progress_elapsed(s)
-    elapsed <= 0 && return 0.0
-    return s.current[] / elapsed
-end
-
-"""
-    progress_eta(s) -> Union{Float64, Nothing}
-
-Estimated seconds remaining, or nothing when it cannot be estimated: an
-indeterminate bar, no progress yet, or a finished bar.
-"""
-function progress_eta(s::ProgressState)
-    s.total === nothing && return nothing
-    done = s.current[]
-    done <= 0 && return nothing
-    done >= s.total && return 0.0
-    return (s.total - done) * (progress_elapsed(s) / done)
-end
-
-"""True once the bar has been marked finished."""
-progress_finished(s::ProgressState) = !(s.finish ≈ 0.0)
-
-# ---------------------------------------------------------------------------
 # Render context
 # ---------------------------------------------------------------------------
 
@@ -207,7 +102,7 @@ progress_finished(s::ProgressState) = !(s.finish ≈ 0.0)
                     io = stdout, vanish = 1.0, fps = 20.0, flat_step = 10,
                     tty = nothing, log_file = nothing) -> ProgressContext
 
-Everything needed to *draw* one progress bar: the atomic ProgressState, the column
+Everything needed to *draw* one progress bar: the atomic BarState, the column
 layout, the output stream, the intercepted-log buffer and the background render
 task.
 
@@ -229,11 +124,7 @@ take the log lock, and every terminal write happens under the write lock.
 """
 mutable struct ProgressContext
     # Atomic counters and timing.
-    state          :: ProgressState
-    # Thread-safe dynamic metrics; the same object as state.postfix.
-    postfix        :: Base.RefValue{Dict{Symbol, Any}}
-    # Insertion order of the postfix keys; the same as state.postfix_order.
-    postfix_order  :: Base.RefValue{Vector{Symbol}}
+    state          :: BarState
     # Columns, joined with single spaces.
     layout         :: Vector{AbstractColumn}
     # Where the bar is drawn.
@@ -285,10 +176,11 @@ function _resolve_vanish(vanish)
     vanish === nothing && return Inf
     vanish === false && return Inf
     vanish === true && return 1.0
-    vanish isa Real || error("Progbiotic: vanish must be a Bool or a number of ",
-                             "seconds; got ", repr(vanish))
+    vanish isa Real ||
+        throw(ProgbioticError("vanish must be a Bool or a number of seconds; got ",
+                              repr(vanish)))
     v = float(vanish)
-    v < 0 && error("Progbiotic: vanish must be >= 0; got ", v)
+    v < 0 && throw(ProgbioticError("vanish must be >= 0; got ", v))
     return v
 end
 
@@ -329,14 +221,12 @@ function ProgressContext(total::Union{Int, Nothing} = nothing;
                          flat_step::Integer = 10,
                          tty::Union{Bool, Nothing} = nothing,
                          log_file = nothing)
-    state = ProgressState(total; desc = desc)
+    state = BarState(total; desc = desc)
     columns = layout === nothing ? default_layout() : Vector{AbstractColumn}(layout)
     interactive = tty === nothing ? _is_tty(io) : Bool(tty)
-    fps > 0 || error("Progbiotic: fps must be positive; got ", fps)
+    fps > 0 || throw(ProgbioticError("fps must be positive; got ", fps))
     sink, destination = _open_log_sink(log_file)
     return ProgressContext(state,
-                           state.postfix,
-                           state.postfix_order,
                            columns,
                            io,
                            interactive,
@@ -356,49 +246,6 @@ function ProgressContext(total::Union{Int, Nothing} = nothing;
                            -1,
                            0,
                            0.0)
-end
-
-"""
-    _update_postfix!(state::ProgressState; kwargs...) -> ProgressState
-
-Thread-safely merge keyword metrics into a state's postfix dictionary, recording the
-insertion order of new keys so the rendered order never jumps around.
-"""
-function _update_postfix!(state::ProgressState; kwargs...)
-    @lock state.lock begin
-        dict = state.postfix[]
-        order = state.postfix_order[]
-        for (key, value) in kwargs
-            haskey(dict, key) || push!(order, key)
-            dict[key] = value
-        end
-    end
-    return state
-end
-
-"""
-    _postfix_pairs(state::ProgressState) -> Vector{Pair{Symbol, Any}}
-
-A consistent snapshot of the postfix metrics, in the order the keys were first set.
-Taken under the state lock, so a concurrent set_postfix! can never be observed
-half-applied.
-"""
-function _postfix_pairs(state::ProgressState)
-    @lock state.lock begin
-        dict = state.postfix[]
-        isempty(dict) && return Pair{Symbol, Any}[]
-        order = state.postfix_order[]
-        pairs = Pair{Symbol, Any}[]
-        for key in order
-            haskey(dict, key) && push!(pairs, key => dict[key])
-        end
-        # Keys inserted through the dictionary directly (bypassing
-        # set_postfix!) still get rendered, just without a stable position.
-        for key in keys(dict)
-            key in order || push!(pairs, key => dict[key])
-        end
-        return pairs
-    end
 end
 
 function Base.show(io::IO, ctx::ProgressContext)

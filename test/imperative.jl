@@ -6,7 +6,7 @@ mutable struct CountingColumn <: AbstractColumn
     frames :: Base.RefValue{Int}
 end
 CountingColumn() = CountingColumn(Ref(0))
-Progbiotic.render_column(column::CountingColumn, ::ProgressState) = (column.frames[] += 1; "tick")
+Progbiotic.render_column(column::CountingColumn, ::BarState) = (column.frames[] += 1; "tick")
 
 """Bare accumulation loop, the baseline the wrapped loop is compared against."""
 function plain_loop(n::Int)
@@ -31,8 +31,8 @@ end
     @testset "Progress constructor and show" begin
         bar = Progress(50; desc = "handle", io = IOBuffer(), vanish = 0.0, start = false)
         @test bar isa Progress
-        @test progress_total(bar) == 50
-        @test progress_current(bar) == 0
+        @test pbtotal(bar) == 50
+        @test pbdone(bar) == 0
         text = sprint(show, bar)
         @test occursin("Progress", text)
         @test occursin("handle", text)
@@ -43,32 +43,32 @@ end
     @testset "next!, update! and finish!" begin
         bar = Progress(10; io = IOBuffer(), vanish = 0.0, start = false)
         next!(bar)
-        @test progress_current(bar) == 1
+        @test pbdone(bar) == 1
         next!(bar, 4)
-        @test progress_current(bar) == 5
+        @test pbdone(bar) == 5
         update!(bar, 8)
-        @test progress_current(bar) == 8
+        @test pbdone(bar) == 8
         # absolute updates are clamped to the total
         update!(bar, 999)
-        @test progress_current(bar) == 10
+        @test pbdone(bar) == 10
         finish!(bar; wait = true)
-        @test progress_finished(bar.ctx.state)
+        @test isfinished(bar.ctx.state)
         @test occursin("finished", sprint(show, bar))
         # finishing twice is harmless
         finish!(bar; wait = true)
-        @test progress_current(bar) == 10
+        @test pbdone(bar) == 10
     end
 
     @testset "indeterminate handles" begin
         bar = Progress(nothing; desc = "watching", io = IOBuffer(), tty = true,
                        vanish = 0.0, start = false)
-        @test progress_total(bar) === nothing
+        @test pbtotal(bar) === nothing
         next!(bar)
         frame = render_frame(bar.ctx)
         @test occursin("watching", frame)
         @test !occursin("%", frame)
         update!(bar, 7)
-        @test progress_current(bar) == 7
+        @test pbdone(bar) == 7
     end
 
     @testset "do-block and withprogress forms" begin
@@ -80,7 +80,7 @@ end
             end
         end
         @test collected == collect(1:5)
-        @test progress_finished(bar.ctx.state)
+        @test isfinished(bar.ctx.state)
 
         seen = 0
         other = withprogress(3; io = IOBuffer(), vanish = 0.0) do p
@@ -90,7 +90,7 @@ end
             end
         end
         @test seen == 3
-        @test progress_current(other) == 3
+        @test pbdone(other) == 3
     end
 
     @testset "thread-safe advance under Threads.@threads" begin
@@ -100,9 +100,9 @@ end
             next!(bar)
         end
         # A lost update would show up here: the counter is a Threads.Atomic.
-        @test progress_current(bar) == n
+        @test pbdone(bar) == n
         finish!(bar; wait = true)
-        @test progress_current(bar) == n
+        @test pbdone(bar) == n
 
         # postfix metrics written from every worker stay intact
         bar2 = Progress(n; desc = "parallel metrics", io = IOBuffer(), vanish = 0.0)
@@ -111,8 +111,10 @@ end
             i % 1000 == 0 && set_postfix!(bar2; thread = Base.Threads.threadid())
         end
         finish!(bar2; wait = true)
-        @test progress_current(bar2) == n
-        @test haskey(bar2.ctx.state.postfix[], :thread)
+        @test pbdone(bar2) == n
+        @test occursin("thread=", Progbiotic.postfix_text(bar2.ctx.state))
+        # one entry for the key, overwritten each time, not one per call
+        @test length(bar2.ctx.state.postfix[]) == 1
     end
 
     @testset "the render task is frame-rate limited" begin
@@ -168,7 +170,7 @@ end
         finish!(bar; wait = true)
 
         @test total == plain
-        @test progress_current(bar) == n
+        @test pbdone(bar) == n
 
         per_iteration_ns = (wrapped - base) / n
         @info "atomic advance overhead" plain_ms = base / 1e6 wrapped_ms = wrapped / 1e6 per_iteration_ns

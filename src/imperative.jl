@@ -133,11 +133,10 @@ finish!(p::Progress; wait::Bool = !p.ctx.tty) = finish!(p.ctx; wait = wait)
 """Attach dynamic metrics to a handle."""
 set_postfix!(p::Progress; kwargs...) = set_postfix!(p.ctx; kwargs...)
 
-"""The total number of units, or nothing for an indeterminate bar."""
-progress_total(p::Progress) = p.ctx.state.total
+"""The state behind a handle."""
+stateof(p::Progress) = p.ctx.state
 
-"""The number of completed units, read atomically."""
-progress_current(p::Progress) = p.ctx.state.current[]
+@state_methods Progress
 
 """
     withprogress(f::Function, total = nothing; kwargs...)

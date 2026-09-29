@@ -413,7 +413,7 @@ function handle_progress_record(bar::ProgressContext, payload)::Bool
     end
     isempty(payload.name) || _set_description!(state, payload.name)
     if fraction !== nothing
-        _update_postfix!(state; progress = round(fraction, digits = 4))
+        _merge_postfix!(state; progress = round(fraction, digits = 4))
     end
     if payload.done && state.total !== nothing
         state.current[] = state.total
@@ -436,14 +436,6 @@ end
 
 handle_progress_record(::Nothing, payload) = false
 handle_progress_record(bar::ProgContext, payload) = handle_progress_record(bar.parent, payload)
-
-"""Set a bar's description if it does not have one yet."""
-function _set_description!(state::ProgressState, name::AbstractString)
-    @lock state.lock begin
-        isempty(state.desc[]) && (state.desc[] = String(name))
-    end
-    return state
-end
 
 # ---------------------------------------------------------------------------
 # Logger callbacks
@@ -737,7 +729,7 @@ end
 
 """Attach dynamic metrics to a column-renderer bar."""
 function set_postfix!(ctx::ProgressContext; kwargs...)
-    _update_postfix!(ctx.state; kwargs...)
+    _merge_postfix!(ctx.state; kwargs...)
     return ctx
 end
 

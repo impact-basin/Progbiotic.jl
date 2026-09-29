@@ -356,7 +356,7 @@ function _render_loop(ctx::ProgressContext)
                 ctx.tty || break
                 # vanish = Inf means keep the finished bar on screen forever.
                 isinf(ctx.vanish) && break
-                (time() - ctx.state.finish) >= ctx.vanish && break
+                (time() - ctx.state.finish[]) >= ctx.vanish && break
             end
             sleep(ctx.dt)
         end
@@ -433,7 +433,7 @@ function finish!(ctx::ProgressContext; wait::Bool = !ctx.tty)
     state = ctx.state
     state.total !== nothing && (state.current[] = state.total)
     state.last_update = time()
-    state.finish ≈ 0.0 && (state.finish = time())
+    state.finish[] == 0 && (state.finish[] = time())
     ctx.finished[] = true
 
     task = ctx.task

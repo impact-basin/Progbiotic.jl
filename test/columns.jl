@@ -5,7 +5,7 @@ strip_ansi(text) = replace(text, r"\e\[[0-9;]*m" => "")
 
 """A bar with a fixed amount of work already done and a fixed 10s of elapsed time."""
 function aged_state(; total = 200, desc = "job", current = 0, elapsed = 10.0)
-    state = ProgressState(total; desc = desc)
+    state = BarState(total; desc = desc)
     state.current[] = current
     state.start = time() - elapsed
     state.last_update = time()
@@ -14,7 +14,7 @@ end
 
 """A user-defined column, proving the documented extension point works."""
 struct TestFixedColumn <: AbstractColumn end
-Progbiotic.render_column(::TestFixedColumn, state::ProgressState) = "fixed"
+Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
 @testset "columns.jl" begin
     @testset "AbstractColumn interface" begin

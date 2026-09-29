@@ -4,6 +4,13 @@ using Colors
 using MacroTools: @capture
 import Logging   # stdlib: log interception for @progress scopes
 
+include("errors.jl")
+export ProgbioticError
+
+include("bar.jl")
+export BarState
+export pbdone, pbtotal, pbfraction, pbrate, pbeta, pbelapsed, pbruntime, isfinished
+
 include("look.jl")
 export Theme
 export CYBERPUNK, NEON, MATRIX, AMBER, EMERALD, OCEAN, GLACIER, TOKYO_NIGHT
@@ -22,10 +29,7 @@ export duration_str
 include("types.jl")
 export AbstractColumn
 export render_column
-export ProgressState
 export ProgressContext
-export progress_current, progress_total, progress_fraction, progress_rate
-export progress_eta, progress_elapsed, progress_runtime, progress_finished
 
 include("columns.jl")
 export SpinnerColumn, TextColumn, BarColumn, PercentageColumn

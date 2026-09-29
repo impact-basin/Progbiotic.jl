@@ -3,3 +3,4 @@
 /docs/build/
 /extract/*/Manifest.toml
 /train.log
+/.depot/
