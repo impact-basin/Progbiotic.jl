@@ -170,3 +170,93 @@ function _set_description!(s::BarState, name::AbstractString)
     end
     return s
 end
+
+# ---------------------------------------------------------------------------
+# Render options, log buffer, and the shared state of a tree
+# ---------------------------------------------------------------------------
+
+"""
+    Opts(vanish, dt, flat_step, tty, threaded)
+
+How a bar draws, fixed when it is built. Immutable, so a node is a value plus a set
+of mutable cells rather than a soup of flags.
+"""
+struct Opts
+    vanish    :: Float64
+    dt        :: Float64
+    flat_step :: Int
+    tty       :: Bool
+    threaded  :: Bool
+end
+
+"""
+    LogEntry(level, message, created_at)
+
+One intercepted log record.
+
+`printed` is set once the append-only renderer has streamed the entry out, so a CI
+log shows each record exactly once while `active_logs` keeps reporting everything the
+scope captured. Entries are pruned once they are older than the scope's vanish
+timeout.
+"""
+mutable struct LogEntry
+    level      :: Logging.LogLevel
+    message    :: String
+    created_at :: Float64
+    printed    :: Bool
+end
+
+LogEntry(level, message, created_at) = LogEntry(level, message, created_at, false)
+
+Base.show(io::IO, e::LogEntry) = print(io, "LogEntry(", e.level, ", ", repr(e.message), ")")
+
+"""True once the entry is older than the given number of seconds."""
+_expired(e::LogEntry, now_sec::Float64, vanish::Float64) = (now_sec - e.created_at) > vanish
+
+
+"""
+    LogBuf()
+
+A bar's intercepted records, the lock guarding them, and its optional permanent sink.
+"""
+mutable struct LogBuf
+    entries :: Vector{LogEntry}
+    lock    :: ReentrantLock
+    sink    :: Union{IO, Nothing}
+    dest    :: Union{String, IO, Nothing}
+end
+
+LogBuf() = LogBuf(LogEntry[], ReentrantLock(), nothing, nothing)
+
+"""
+    Paint()
+
+Renderer bookkeeping for one node: the counter value seen at the previous tick, the
+last percentage announced in flat mode, and the rows this node's block occupied.
+"""
+mutable struct Paint
+    count    :: Int
+    flat_pct :: Int
+    rows     :: Int
+end
+
+Paint() = Paint(0, -1, 0)
+
+"""
+    RootState()
+
+State shared by every node of one tree: the render task, the rows drawn last frame,
+and the lock guarding writes to the shared stream.
+
+A child holds the same object as its root, which is what makes "children never spawn
+a task" a property of the types rather than a convention someone has to remember.
+"""
+mutable struct RootState
+    task      :: Union{Task, Nothing}
+    running   :: Threads.Atomic{Bool}
+    rows      :: Int
+    last_draw :: Float64
+    lock      :: ReentrantLock
+end
+
+RootState() = RootState(nothing, Threads.Atomic{Bool}(false), 0, 0.0, ReentrantLock())

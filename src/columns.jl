@@ -142,19 +142,27 @@ Unknown placeholders are left alone, so a template with literal braces still wor
 """
 struct Tag <: AbstractColumn
     template :: String
+    width    :: Int
 end
 
-Tag(; template::AbstractString = "{desc}") = Tag(String(template))
+Tag(template::AbstractString; width::Int = 0) = Tag(String(template), max(0, width))
+Tag(; template::AbstractString = "{desc}", width::Int = 0) = Tag(String(template), max(0, width))
+
 
 function render_column(col::Tag, state::BarState)
-    text = col.template
+    text = strip(_interpolate(col.template, state))
+    return col.width == 0 ? text : rpad(text, col.width)
+end
+
+function _interpolate(template::AbstractString, state::BarState)
+    text = template
     occursin("{desc}", text)    && (text = replace(text, "{desc}"    => state.desc[]))
     occursin("{n}", text)       && (text = replace(text, "{n}"       => string(pbdone(state))))
     occursin("{total}", text)   && (text = replace(text, "{total}"   => _total_text(state)))
     occursin("{pct}", text)     && (text = replace(text, "{pct}"     => _percent_text(state, 1)))
     occursin("{elapsed}", text) && (text = replace(text, "{elapsed}" => _format_hms(pbruntime(state))))
     occursin("{postfix}", text) && (text = replace(text, "{postfix}" => postfix_text(state)))
-    return strip(text)
+    return text
 end
 
 _total_text(state::BarState) = pbtotal(state) === nothing ? "" : string(pbtotal(state))
@@ -370,9 +378,9 @@ A theme is applied by *building* columns, not by columns consulting it: styling 
 fixed when the bar is constructed, `render_column` stays a pure function of the state,
 and a custom column needs no plumbing to be styled.
 """
-theme_layout(t::Theme) = (
+theme_layout(t::Theme; desc_width::Int = 0) = (
     Spinner(t.spinner; palette = t.palette),
-    Tag("{desc}"),
+    Tag("{desc}"; width = desc_width),
     Bar(t.barunits, t.empty, t.palette, t.caps, t.head),
     Percent(),
     Count(),

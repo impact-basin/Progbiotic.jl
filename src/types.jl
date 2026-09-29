@@ -54,46 +54,6 @@ right now"; the engine drops empty columns along with the whitespace around them
 function render_column end
 
 # ---------------------------------------------------------------------------
-# Intercepted log records
-# ---------------------------------------------------------------------------
-
-"""
-    LogEntry
-
-A single log record intercepted inside a prog(...) or Progress(...) scope.
-
-Fields:
-
-- level:      the Logging.LogLevel of the record (Logging.Info, Logging.Warn, ...);
-- message:    the rendered message, including any log keyword arguments;
-- created_at: the time() at which the record was emitted.
-- printed:    set once the non-interactive renderer has streamed the entry out, so
-              an append-only stream prints each record exactly once while
-              active_logs keeps reporting everything the scope captured.
-
-Entries live in a Vector{LogEntry} inside the owning ProgressContext and are pruned
-once they are older than the scope's vanish timeout.  Rendering them never nests
-them inside the bar's own frame, so a transient line cannot tear the display; see
-src/engine.jl.
-"""
-mutable struct LogEntry
-    level      :: Logging.LogLevel
-    message    :: String
-    created_at :: Float64
-    # Set once the non-interactive renderer has streamed the entry out, so an
-    # append-only stream prints each record exactly once while active_logs keeps
-    # reporting everything the scope captured.
-    printed    :: Bool
-
-    LogEntry(level, message, created_at) = new(level, message, created_at, false)
-end
-
-Base.show(io::IO, e::LogEntry) = print(io, "LogEntry(", e.level, ", ", repr(e.message), ")")
-
-"""True once the entry is older than the given number of seconds."""
-_expired(e::LogEntry, now_sec::Float64, vanish::Float64) = (now_sec - e.created_at) > vanish
-
-# ---------------------------------------------------------------------------
 # Render context
 # ---------------------------------------------------------------------------
 
