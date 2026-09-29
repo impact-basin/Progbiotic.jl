@@ -469,12 +469,10 @@ end
         catch e
             e
         end
-        # a with= value that is not a bar is rejected rather than silently threaded.
-        # NOTE: the guard in src/macros.jl builds its ProgbioticError without throwing
-        # it, so the rejection currently surfaces from Progbiotic.child as a MethodError;
-        # the error type is therefore pinned no tighter than Exception here. see the
-        # report.
-        @test err isa Exception
+        # a with= value that is not a bar is rejected, with the message the guard wrote,
+        # rather than falling through to Progbiotic.child
+        @test err isa ProgbioticError
+        @test occursin("with=", sprint(showerror, err))
     end
 
     @testset "BUG1: final_depth retains children without v=false" begin
@@ -569,10 +567,20 @@ end
         @test all(Progbiotic._completed, children(root))
     end
 
+    @testset "style overrides work at the root of a tree too" begin
+        root_ref = Ref{Any}(nothing)
+        @progress "styled root" spinner = "✶✷" caps = "[]" width = 12 io = IOBuffer() for i in 1:2
+            root_ref[] = Progbiotic.current_bar()
+        end
+
+        bar = root_ref[]
+        @test bar.theme.spinner == ['✶', '✷']
+        @test bar.theme.caps == ('[', ']')
+        @test bar.opts.width == 12
+    end
+
     @testset "per-bar style overrides via @progress" begin
         inner_ref = Ref{Any}(nothing)
-        # the glyph overrides go on a child: the root constructor does not take the
-        # spinner/barunits/empty/caps/head keywords today (see the report)
         @progress (ctx => "x") io=IOBuffer() for i in 1:2
             @progress (pbar => ("y", spinner="✶✷", barunits="░█", empty="░", width=30)) for j in 1:2
                 inner_ref[] = pbar

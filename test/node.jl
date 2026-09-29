@@ -103,6 +103,31 @@ using Test
         @test_throws ProgbioticError child(root, 1; kind = :nope)
     end
 
+    @testset "registering a milestone does not close it" begin
+        root = Progbiotic.Progress(3; desc = "foo", kind = :container, io = IOBuffer(),
+                                   tty = false, vanish = nothing, child_vanish = 0.5,
+                                   start = false)
+
+        m1 = child(root, nothing; desc = "job 1", kind = :milestone)
+        @test !isfinished(m1)          # the call that registers it must not close it
+        @test pbdone(root) == 0
+
+        m2 = child(root, nothing; desc = "job 2", kind = :milestone)
+        @test isfinished(m1)           # the next sibling closes the one before it
+        @test !isfinished(m2)
+        @test pbdone(root) == 1
+
+        m3 = child(root, nothing; desc = "job 3", kind = :milestone)
+        @test isfinished(m2)
+        @test !isfinished(m3)
+        @test pbdone(root) == 2
+
+        Progbiotic._complete_statement_jobs!(root)   # the scope exit closes the rest
+        @test isfinished(m3)
+        @test pbdone(root) == 3
+        @test Progbiotic.iscontainer(root)
+    end
+
     @testset "an indeterminate node is one unit of work" begin
         root = Progbiotic.Progress(nothing; desc = "milestone", io = IOBuffer(),
                                    tty = false, vanish = 0.0)
