@@ -256,7 +256,7 @@ const _FLAT_SKIP = (Spinner, Tag, Bar, Percent, Count, Postfix)
 
 One line of the non-interactive format, e.g.
 
-    [INFO] Parsing Records  25% (250/1000) [412.5 it/s] ETA: 730.3ms [loss=0.041]
+    Parsing Records  25% (250/1000) [412.5 it/s] ETA: 730.3ms [loss=0.041]
 
 Not an escape sequence anywhere: this is output you grep.
 
@@ -271,11 +271,11 @@ function render_flat_line(node::Progress, depth::Int = 0)
     indent = repeat("  ", depth)
 
     head = if state.total === nothing
-        string("[INFO] ", indent, label, " ", max(pbdone(state), 1), " (indeterminate)")
+        string(indent, label, " ", max(pbdone(state), 1), " (indeterminate)")
     else
         done = clamp(pbdone(state), 0, state.total)
         pct  = state.total > 0 ? floor(Int, 100 * done / state.total) : 100
-        string("[INFO] ", indent, label, " ", pct, "% (", done, "/", state.total, ")")
+        string(indent, label, " ", pct, "% (", done, "/", state.total, ")")
     end
 
     extras = String[]

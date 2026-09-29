@@ -142,7 +142,7 @@ end
 
         line = render_flat_line(bar)
         @test !occursin('\e', line)
-        @test startswith(line, "[INFO] flat 30% (3/10)")
+        @test startswith(line, "flat 30% (3/10)")
         @test length(findall("[loss=0.041]", line)) == 1
     end
 

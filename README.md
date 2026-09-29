@@ -217,10 +217,9 @@ finishes, the rows go back. Anywhere else - a pipe, a redirected file, a CI buil
 it emits flat, append-only lines and *not a single escape sequence*:
 
 ```text
-[INFO] Parsing Records 0% (0/1000) ETA: N/A
-[INFO] Parsing Records 25% (250/1000) [412.5 it/s] ETA: 730.3ms
-[INFO] checkpoint at record 500
-[INFO] Parsing Records 100% (1000/1000) [398.1 it/s] done in 2.51s
+Parsing Records 0% (0/1000) ETA: N/A
+Parsing Records 25% (250/1000) [412.5 it/s] ETA: 730.3ms
+Parsing Records 100% (1000/1000) [398.1 it/s] done in 2.51s
 ```
 
 One line is emitted per `flat_step` percent (default 10), so a ten-million-iteration
