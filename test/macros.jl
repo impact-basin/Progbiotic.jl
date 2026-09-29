@@ -335,6 +335,59 @@ end
         @test occursin("job 1", text) && occursin("job 2", text) && occursin("job 3", text)
     end
 
+    @testset "a container's total grows with the milestones it sees" begin
+        # the total cannot be counted from the source: a milestone inside an if is one
+        # statement, and one inside a loop is one statement but several registrations
+        grow  = Ref{Any}(nothing)
+        steps = Tuple{Int, Int}[]
+        @progress (ctx => "grow") io = IOBuffer() begin
+            grow[] = ctx
+            @progress "job 1"
+            push!(steps, (pbdone(ctx), pbtotal(ctx)))
+            @progress "job 2"
+            push!(steps, (pbdone(ctx), pbtotal(ctx)))
+            @progress "job 3"
+            push!(steps, (pbdone(ctx), pbtotal(ctx)))
+            # the milestone just registered is open until the scope ends, so the count
+            # trails the total by one all the way through
+            @test (pbdone(ctx), pbtotal(ctx)) == (2, 3)
+        end
+        @test steps == [(0, 1), (1, 2), (2, 3)]
+        @test (pbdone(grow[]), pbtotal(grow[])) == (3, 3)
+
+        # a milestone inside an if registers like any other, and the total keeps up with
+        # it instead of being fixed in advance and then overshot
+        buried = Ref{Any}(nothing)
+        @progress (ctx => "buried") io = IOBuffer() begin
+            buried[] = ctx
+            if true
+                @progress "inside an if"
+            end
+            @progress "direct"
+        end
+        @test count(Progbiotic.ismilestone, children(buried[])) == 2
+        @test (pbdone(buried[]), pbtotal(buried[])) == (2, 2)
+
+        # and one inside a loop registers once per pass
+        looped = Ref{Any}(nothing)
+        @progress (ctx => "looped") io = IOBuffer() begin
+            looped[] = ctx
+            for _ in 1:3
+                @progress "each pass"
+            end
+        end
+        @test length(children(looped[])) == 3
+        @test (pbdone(looped[]), pbtotal(looped[])) == (3, 3)
+
+        # a block with no milestones at all is still one unit of work, and completes
+        empty = Ref{Any}(nothing)
+        @progress (ctx => "empty") io = IOBuffer() begin
+            empty[] = ctx
+        end
+        @test isempty(children(empty[]))
+        @test (pbdone(empty[]), pbtotal(empty[])) == (1, 1)
+    end
+
     @testset "statement subtasks complete sequentially" begin
         root_ref = Ref{Any}(nothing)
         @progress (ctx => "foo") io=IOBuffer() begin

@@ -460,6 +460,7 @@ function child(parent::Progress, total::Union{Int, Nothing} = nothing;
     pending = _pending_milestones(parent)
     @lock root.lock push!(parent.children, node)
     _finish_milestones!(parent, pending)
+    _refresh_container_state!(parent)
     return node
 end
 
@@ -498,14 +499,16 @@ its own, so it is done when the next sibling registers or when its enclosing sco
 which is what makes `@progress "step"` a statement about the work that follows it.
 """
 function _complete_statement_jobs!(parent::Progress)
-    return _finish_milestones!(parent, _pending_milestones(parent))
+    _finish_milestones!(parent, _pending_milestones(parent))
+    return _refresh_container_state!(parent)
 end
 
 """The milestones under a node that have not finished yet."""
 _pending_milestones(parent::Progress) =
     [kid for kid in children(parent) if ismilestone(kid) && !_completed(kid)]
 
-# close a set of milestones, and tell their container how far along it is
+# close a set of milestones. The container is refreshed by the caller, which is also what
+# adds a newly registered milestone to the count.
 function _finish_milestones!(parent::Progress, pending::Vector)
     isempty(pending) && return nothing
 
@@ -514,17 +517,24 @@ function _finish_milestones!(parent::Progress, pending::Vector)
         kid.state.finish[] == 0 && (kid.state.finish[] = now_sec)
         kid.paint.completed_at == 0.0 && (kid.paint.completed_at = now_sec)
     end
-    _refresh_container_state!(parent)
     return nothing
 end
 
-# a container's state is how many of its milestones have completed, so its line reads
-# 2/3 once two of them are done
+# A container's total is the number of milestones it has actually seen, rather than a
+# count taken from the source: a milestone written inside an if, or inside a loop, is one
+# statement but several registrations, so no syntactic count can be right. Counting as
+# they arrive cannot overshoot, and it reads a block opening as one unit of work until the
+# first milestone lands. Its state is how many of them have completed, so its line reads
+# 2/3 once two are done.
 function _refresh_container_state!(parent::Progress)
     iscontainer(parent) || return nothing
-    parent.state.total === nothing && return nothing
 
-    done = count(kid -> ismilestone(kid) && _completed(kid), children(parent))
+    kids = children(parent)
+    seen = count(ismilestone, kids)
+    done = count(kid -> ismilestone(kid) && _completed(kid), kids)
+    # total is read by the render task without a lock, and this is the only writer. It
+    # only ever grows here, so a tick sees either the old count or the new one.
+    @lock parent.state.lock parent.state.total = max(1, seen)
     parent.state.current[] = done
     parent.state.last_update = time()
     return nothing

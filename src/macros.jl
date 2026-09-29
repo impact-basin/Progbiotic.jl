@@ -279,8 +279,7 @@ end
 
 """
     _build_level_block(parent, job_sym, opts, body_expr;
-                       is_loop, iter_sym=nothing, iter=nothing,
-                       milestone_count=0, thread_ctx=nothing)
+                       is_loop, iter_sym=nothing, iter=nothing, thread_ctx=nothing)
 
 Registers a job for one `@progress` level (a `for` loop or a `begin ... end`
 block), runs `body_expr` under it with a `ProgbioticLogger` installed so log
@@ -289,19 +288,19 @@ any pending statement subtasks and the job itself. When `thread_ctx` is a symbol
 it is scoped-rebound to the new job for the duration of the block and restored
 afterwards, so contexts automatically track the innermost job.
 
-A loop job's total is inferred from its iterable; a block job's total is
-`max(1, milestone_count)` — the number of `@progress "desc"` milestones it
-contains — and, when positive, the job is marked as a milestone container whose
-state tracks how many milestones have completed.
+A loop's total is inferred from its iterable. A block is marked a milestone container,
+and its total is however many milestones it registers, counted as they arrive.
 """
 function _build_level_block(parent, job_sym, opts, body_expr;
                             is_loop::Bool = false,
                             iter_sym::Union{Symbol, Nothing} = nothing,
                             iter = nothing,
-                            milestone_count::Int = 0,
                             thread_ctx::Union{Symbol, Nothing} = nothing)
-    total = is_loop ? :($(_p(:infer_total))($iter_sym)) : max(1, milestone_count)
-    kind  = is_loop || milestone_count == 0 ? :bar : :container
+    # a loop knows its total from the iterable; a block's is however many milestones it
+    # turns out to contain, which only the running code knows, so it opens indeterminate
+    # and _refresh_container_state! gives it a total as the milestones arrive
+    total = is_loop ? :($(_p(:infer_total))($iter_sym)) : nothing
+    kind  = is_loop ? :bar : :container
 
     node_kws = Any[Expr(:kw, :desc, opts[:desc]),
                    Expr(:kw, :theme, _theme_expr(opts)),
@@ -368,28 +367,6 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     return is_loop ? :(let $iter_sym = $iter
                            $block
                        end) : block
-end
-
-# counts the direct `@progress "desc"` statement invocations in a begin/end block
-# body. These are the block's "milestones": they give the block job its total and
-# each one completed advances the block's progress by one.
-function _count_milestones(body_expr)
-    body_expr isa Expr && body_expr.head == :block || return 0
-    n = 0
-    for arg in body_expr.args
-        arg isa LineNumberNode && continue
-        if _is_macrocall_progress(arg)
-            m_args = _extract_macrocall_args(arg)
-            if !isempty(m_args)
-                last = m_args[end]
-                # statement-form only: no loop (possibly macro-wrapped) and no block body.
-                if !(last isa Expr && (last.head == :block || _contains_for(last)))
-                    n += 1
-                end
-            end
-        end
-    end
-    return n
 end
 
 """
@@ -463,7 +440,6 @@ function _build_progress_level(m_args, parent,
         job_sym  = gensym("child_job")
         new_body = _transform_progress_ast(body_expr, job_sym, opts, carried)
         _build_level_block(level_parent, job_sym, opts, new_body;
-                           milestone_count = _count_milestones(body_expr),
                            thread_ctx = block_thread)
     else
         # `@progress "desc"` statement: register a named subtask (milestone) under
