@@ -81,6 +81,8 @@ Maps short-form option names to their full names and normalises values:
 - `v=false` -> `vanish=false`      (keep bars on screen)
 - `v=1.2`   -> `vanish_timeout=1.2` (seconds)
 - `vanish=2.0` -> `vanish_timeout=2.0` (seconds)
+- `ev=true` -> `error_vanish=true`   (errored bars use the node's timeout)
+- `ev=1.2`  -> `error_vanish=1.2`    (seconds)
 """
 function _canonical_progress_option(key, val)
     if key === :d
@@ -98,6 +100,17 @@ function _canonical_progress_option(key, val)
                 "`v=false` keeps bars on screen) or `vanish_timeout=<seconds>` ",
                 "(e.g. `v=1.2`)"))
         end
+    elseif key === :ev
+        val isa Bool && return (:error_vanish, val)
+        val isa Real && return (:error_vanish, float(val))
+        throw(ProgbioticError(
+            "@progress: `ev=$val` must be a Bool or a number of seconds; `ev=true` ",
+            "vanishes errored bars with the node's timeout, `ev=1.2` gives them their own"))
+    elseif key === :error_vanish
+        val isa Bool && return (:error_vanish, val)
+        val isa Real && return (:error_vanish, float(val))
+        throw(ProgbioticError(
+            "@progress: `error_vanish=$val` must be a Bool or a number of seconds"))
     elseif key === :vanish_timeout && val isa Real
         # normalise e.g. `vanish_timeout=1` to Float64 for add_job!
         return (:vanish_timeout, float(val))
@@ -124,6 +137,7 @@ function _parse_progress_args(args)
         :title          => "",
         :vanish         => nothing,
         :vanish_timeout => nothing,
+        :error_vanish   => nothing,
         :final_depth    => 0,
         :with           => nothing,
         :spinner        => nothing,
@@ -174,7 +188,8 @@ end
 # constructors read its absence differently: a root keeps its own bar for the whole scope
 # while a child takes the tree's child default.
 _vanish_kws(opts) = Any[Expr(:kw, :vanish, opts[:vanish]),
-                        Expr(:kw, :vanish_timeout, opts[:vanish_timeout])]
+                        Expr(:kw, :vanish_timeout, opts[:vanish_timeout]),
+                        Expr(:kw, :error_vanish, opts[:error_vanish])]
 
 _contains_for(e) =
     e isa Expr && (e.head == :for ||
@@ -314,6 +329,7 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     # set_postfix!() inside it attaches here. Nested levels install their own, which is
     # what makes the innermost one win.
     saved_bar = gensym("saved_bar")
+    saved_err = gensym("saved_err")
     body = quote
         let $(bindings...)
             $bind
@@ -321,11 +337,15 @@ function _build_level_block(parent, job_sym, opts, body_expr;
             let $saved_bar = $(_p(:_install_bar!))($job_sym)
                 try
                     $body_expr
+                catch $saved_err
+                    $(_p(:fail!))($job_sym, $saved_err)
+                    $(_p(:_fail_pending_milestones!))($job_sym, $saved_err)
+                    rethrow()
                 finally
                     $(_p(:_restore_bar!))($saved_bar)
                     $restore_ctx
                     $(_p(:_complete_statement_jobs!))($job_sym)
-                    $completion
+                    $(_p(:haserror))($job_sym) || $completion
                 end
             end
         end
@@ -388,6 +408,9 @@ function _build_progress_level(m_args, parent,
         end
         if opts[:vanish_timeout] === nothing && parent_opts[:vanish_timeout] !== nothing
             opts[:vanish_timeout] = parent_opts[:vanish_timeout]
+        end
+        if opts[:error_vanish] === nothing && parent_opts[:error_vanish] !== nothing
+            opts[:error_vanish] = parent_opts[:error_vanish]
         end
     end
 
@@ -583,10 +606,12 @@ so deeper calls thread further, and restored afterwards.
 # short form options
 
 The keyword options accept short aliases:
-- `d=1`      — `final_depth=1` (levels of children kept in the final render)
-- `v=false`  — `vanish=false` (keep bars on screen)
-- `v=1.2`    — `vanish_timeout=1.2` (seconds)
-- `t=OCEAN`  — `theme=OCEAN`
+- `d=1`: `final_depth=1` (levels of children kept in the final render)
+- `v=false`: `vanish=false` (keep bars on screen)
+- `v=1.2`: `vanish_timeout=1.2` (seconds)
+- `ev=true`: errored bars vanish with the node's timeout
+- `ev=1.2`: errored bars vanish after 1.2s
+- `t=OCEAN`: `theme=OCEAN`
 
 To run a loop multithreaded, wrap it with `Threads.@threads` instead of passing an
 option:
@@ -615,6 +640,10 @@ By default, completed bars vanish from the tree shortly after finishing
 screen with stale, finished sub-bars. Pass `vanish=false` to keep every bar on
 screen, or `vanish_timeout=<seconds>` to control how long finished bars linger.
 These options are inherited by nested `@progress` levels unless overridden.
+
+An errored bar is different: it stays on screen by default, so a failure is not missed.
+Pass `ev=true` to let it vanish with the node's own timeout, or `ev=<seconds>` to give
+errored bars a timeout of their own.
 
 # Postfix metrics
 
@@ -688,12 +717,14 @@ own.
 function _root_bar(total, title, final_depth, io;
                    desc::AbstractString = "", theme::Theme = AMBER, kind::Symbol = :bar,
                    vanish = nothing, vanish_timeout = nothing, width::Integer = 0,
+                   error_vanish = nothing,
                    spinner = nothing, barunits = nothing, empty = nothing,
                    caps = nothing, head = nothing)
     return Progress(total; desc = desc, kind = kind, title = title,
                     final_depth = final_depth, child_vanish = 0.5, width = width,
                     theme = _apply_style(theme, spinner, barunits, empty, caps, head),
                     vanish = vanish, vanish_timeout = vanish_timeout,
+                    error_vanish = error_vanish,
                     io = io === nothing ? stdout : io)
 end
 

@@ -37,6 +37,9 @@ function ansi_fg(c::Colorant)
     return string("\e[38;2;", r, ";", g, ";", b, "m")
 end
 
+# one error colour for the whole package, so a failed bar reads the same in every theme
+const _ERROR_FG = ansi_fg(rgb"#CC0000")
+
 """
     palette_gradient(palette, t) -> String
 

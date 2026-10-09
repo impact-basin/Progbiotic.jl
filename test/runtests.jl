@@ -100,6 +100,7 @@ plain(text) = replace(text, r"\e\[[0-9;]*m" => "")
     end
 
     include("bar.jl")
+    include("error.jl")
     include("quality.jl")
     include("node.jl")
     include("iterator.jl")

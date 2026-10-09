@@ -119,8 +119,15 @@ loop ends. This is the form to use when the body logs:
 function prog(f::Function, iter; kwargs...)
     wrapped = prog(iter; kwargs...)
     _with_scope(wrapped.bar) do
-        for item in wrapped
-            f(item)
+        try
+            for item in wrapped
+                f(item)
+            end
+        catch err
+            fail!(wrapped.bar, err)
+            rethrow()
+        finally
+            finish!(wrapped.bar)
         end
     end
     return nothing
@@ -188,6 +195,14 @@ end
 
 """Attach dynamic metrics to a wrapped collection's bar."""
 set_postfix!(it::ProgbioticIterator; kwargs...) = set_postfix!(it.bar; kwargs...)
+
+"""
+    fail!(it::ProgbioticIterator, err) -> it
+
+Register an error against a wrapped collection's bar. The do-block `prog(f, iter)` does
+this for you; a bare `for x in prog(...)` can only do it from its own `catch`.
+"""
+fail!(it::ProgbioticIterator, err) = (fail!(it.bar, err); it)
 
 """Finish a wrapped collection's bar early (for example after breaking out)."""
 finish!(it::ProgbioticIterator; wait::Bool = !it.bar.opts.tty) = finish!(it.bar; wait = wait)

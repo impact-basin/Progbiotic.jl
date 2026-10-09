@@ -8,7 +8,8 @@ The shared, mutable state of a single bar.
 `current` is the only contended field: advancing a bar is one
 `Threads.atomic_add!`, which is what keeps a `Threads.@threads` loop from
 serialising on the bar. `finish` is atomic because the render task reads it while
-`finish!` writes it. Everything else is immutable, or written under `lock`.
+`finish!` writes it. Everything else is immutable, or written under `lock`, which also
+guards `error`, the one field written by whichever thread is unwinding.
 
 A `total` of `nothing` means indeterminate: the amount of work is unknown (an
 unbounded channel, a `SizeUnknown` iterator), so there is no percentage and no ETA
@@ -25,6 +26,10 @@ mutable struct BarState
     total       :: Union{Int, Nothing}
     start       :: Float64
     finish      :: Threads.Atomic{Float64}
+    # the exception that took the bar down, if any; written once, under lock
+    error       :: Base.RefValue{Union{Nothing, ErrorInfo}}
+    # a node beneath this one failed, so it draws the error colour without being an error
+    tainted     :: Bool
     last_update :: Float64
     desc        :: Base.RefValue{String}
     # dynamic metrics, in insertion order, rendered to text at set_postfix! time
@@ -34,13 +39,16 @@ end
 
 function BarState(total::Union{Int, Nothing} = nothing; desc::AbstractString = "")
     now = time()
-    return BarState(Threads.Atomic{Int}(0), total, now, Threads.Atomic{Float64}(0.0), now,
+    return BarState(Threads.Atomic{Int}(0), total, now, Threads.Atomic{Float64}(0.0),
+                    Ref{Union{Nothing, ErrorInfo}}(nothing), false, now,
                     Ref(String(desc)), Ref(Pair{Symbol, String}[]), ReentrantLock())
 end
 
 function Base.show(io::IO, s::BarState)
     print(io, "BarState(", repr(s.desc[]), ", ")
     s.total === nothing ? print(io, "indeterminate") : print(io, s.current[], "/", s.total)
+    s.error[] === nothing || print(io, ", error=", s.error[].type)
+    s.tainted && print(io, ", tainted")
     print(io, ")")
 end
 
@@ -104,12 +112,31 @@ function pbeta(s::BarState)
     return (total - done) * (pbelapsed(s) / done)
 end
 
-"""True once the bar has been marked finished."""
-isfinished(s::BarState) = s.finish[] > 0
+"""
+    isfinished(s) -> Bool
 
-"""The state readers a wrapper type forwards, in the order a bar's line shows them."""
+True once the bar has completed successfully. A failed bar is over, but it is not
+finished: `haserror` is what says so.
+"""
+isfinished(s::BarState) = s.finish[] > 0 && s.error[] === nothing
+
+"""Whether the bar has registered an error. See `pberror` and `fail!`."""
+haserror(s::BarState) = s.error[] !== nothing
+
+"""The error a bar registered, as an `ErrorInfo`, or nothing when it has none."""
+pberror(s::BarState) = s.error[]
+
+"""
+    istainted(s) -> Bool
+
+Whether the bar should draw in the error colour: it registered an error, or a node beneath
+it did. A tainted bar is not itself an error, so its time column stays a time.
+"""
+istainted(s::BarState) = s.error[] !== nothing || s.tainted
+
+"""The state readers a wrapper type forwards to the BarState it projects."""
 const _STATE_READERS = (:pbdone, :pbtotal, :pbfraction, :pbelapsed, :pbruntime,
-                        :pbrate, :pbeta, :isfinished)
+                        :pbrate, :pbeta, :isfinished, :haserror, :pberror)
 
 """
     @state_methods T
@@ -140,9 +167,11 @@ a "done in" from after. A line is rendered from one of these instead, so what it
 moment. The lock is shared rather than copied; only the values are frozen.
 """
 function _snapshot(state::BarState)
-    postfix = @lock state.lock copy(state.postfix[])
+    error, tainted, postfix =
+        @lock state.lock (state.error[], state.tainted, copy(state.postfix[]))
     return BarState(Threads.Atomic{Int}(state.current[]), state.total, state.start,
-                    Threads.Atomic{Float64}(state.finish[]), state.last_update,
+                    Threads.Atomic{Float64}(state.finish[]),
+                    Ref{Union{Nothing, ErrorInfo}}(error), tainted, state.last_update,
                     Ref(state.desc[]), Ref(postfix), state.lock)
 end
 
@@ -193,39 +222,45 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    Opts(; vanish = 1.0, dt = 0.05, flat_step = 10, width = 0, tty = false,
-         threaded = false)
+    Opts(; vanish = 1.0, error_vanish = Inf, dt = 0.05, flat_step = 10, width = 0,
+         tty = false, threaded = false)
 
 How a node draws, fixed when it is built. Immutable, so a node is a value plus a set
 of mutable cells rather than a soup of flags.
 
 `vanish` is the seconds a finished node stays on screen (Inf keeps it, 0.0 erases it
-at once) and `width` a bar-width override, where 0 means "measure what the rest of
-the line left". Both arrive here already resolved: see `_resolve_vanish`.
+at once), `error_vanish` the same for an errored one (Inf keeps it forever, which is
+the default), and `width` a bar-width override, where 0 means "measure what the rest
+of the line left". All three arrive here already resolved: see `_resolve_vanish` and
+`_resolve_error_vanish`.
 """
 struct Opts
-    vanish    :: Float64
-    dt        :: Float64
-    flat_step :: Int
-    width     :: Int
-    tty       :: Bool
-    threaded  :: Bool
+    vanish       :: Float64
+    error_vanish :: Float64
+    dt           :: Float64
+    flat_step    :: Int
+    width        :: Int
+    tty          :: Bool
+    threaded     :: Bool
 end
 
-Opts(; vanish::Real = 1.0, dt::Real = 0.05, flat_step::Integer = 10,
-     width::Integer = 0, tty::Bool = false, threaded::Bool = false) =
-    Opts(float(vanish), float(dt), max(1, Int(flat_step)), max(0, Int(width)), tty, threaded)
+Opts(; vanish::Real = 1.0, error_vanish::Real = Inf, dt::Real = 0.05,
+     flat_step::Integer = 10, width::Integer = 0, tty::Bool = false,
+     threaded::Bool = false) =
+    Opts(float(vanish), float(error_vanish), float(dt), max(1, Int(flat_step)),
+         max(0, Int(width)), tty, threaded)
 
 """
     Paint()
 
 Renderer bookkeeping for one node: the counter value seen at the previous tick, the last
 percentage announced in flat mode and when, whether that announcement already said the
-node had finished, and when the node reached its total.
+node had settled, and when the node settled.
 
 `completed_at` is separate from `BarState.finish` because a child that reaches its
-total by being advanced never calls `finish!`; the render tick is what notices, and
-the vanish timeout is measured from there.
+total by being advanced never calls `finish!`; the render tick is what notices, and the
+vanish timeout is measured from there. The same stamp covers an errored node, which may
+never call `finish!` either.
 
 `flat_done` is what stops the append-only renderer repeating itself. A node's last
 percentage cannot say whether its line already read "done in ...", because an
@@ -241,6 +276,24 @@ end
 
 Paint() = Paint(0, -1, 0.0, false, 0.0)
 
+# how many failures one tree keeps on screen; older records fall off the top of the
+# gutter anyway, and this keeps a loop that catches thousands from growing forever
+const _MAX_FAILURES = 64
+
+"""
+    FailureRecord
+
+One caught failure, frozen: the chain of nodes from the tree's root down to the node that
+failed, each paired with a snapshot of its state at that moment. The failed node carries
+the error; its ancestors are `tainted`, so they draw the error colour while keeping their
+own time column. Records live on the root (`RootState.failures`) and are drawn above the
+live tree.
+"""
+struct FailureRecord
+    err  :: Any
+    rows :: Vector{Tuple{Any, BarState}}
+end
+
 """
     RootState(; title = "", final_depth = 0, child_vanish = 1.0)
 
@@ -252,7 +305,8 @@ a task" a property of the types rather than a convention someone has to remember
 
 `child_vanish` is the timeout a node of this tree gets when it asks for none of its
 own: `@progress` keeps its root for the whole scope and gives its children 0.5s, while
-a standalone bar's children simply follow it.
+a standalone bar's children simply follow it. `failures` holds the frozen chains of caught
+failures, drawn above the live tree.
 """
 mutable struct RootState
     task         :: Union{Task, Nothing}
@@ -263,6 +317,7 @@ mutable struct RootState
     style        :: Symbol
     child_vanish :: Float64
     last_draw    :: Float64
+    failures     :: Vector{FailureRecord}
     lock         :: ReentrantLock
 end
 
@@ -273,7 +328,7 @@ function RootState(; title::AbstractString = "", final_depth::Integer = 0,
                               join(sort!(collect(keys(TREE_STRS))), ", ")))
     return RootState(nothing, Threads.Atomic{Bool}(false), 0, String(title),
                      max(0, Int(final_depth)), style, float(child_vanish), 0.0,
-                     ReentrantLock())
+                     FailureRecord[], ReentrantLock())
 end
 
 """
@@ -292,6 +347,25 @@ function _resolve_vanish(vanish)
                               repr(vanish)))
     v = float(vanish)
     v < 0 && throw(ProgbioticError("vanish must be >= 0; got ", v))
+    return v
+end
+
+"""
+    _resolve_error_vanish(ev, own) -> Float64
+
+Normalise the `error_vanish` option: nothing and false keep an errored node on screen
+forever (Inf), true gives it the node's own resolved vanish (`own`), and a number is a
+separate timeout in seconds.
+"""
+function _resolve_error_vanish(ev, own::Float64)
+    ev === nothing && return Inf
+    ev === false   && return Inf
+    ev === true    && return own
+    ev isa Real ||
+        throw(ProgbioticError("error_vanish must be a Bool or a number of seconds; got ",
+                              repr(ev)))
+    v = float(ev)
+    v < 0 && throw(ProgbioticError("error_vanish must be >= 0; got ", v))
     return v
 end
 
@@ -336,6 +410,8 @@ a child vector cannot name its element type. Read the children through
                 true is the 1.0 second default, a number is the timeout.
 - child_vanish: the vanish a child gets when it asks for none of its own. Tree policy,
                 so it is read on a root only.
+- error_vanish: how long an errored node stays: nothing or false keeps it forever, true
+                gives it its own vanish, a number is a separate timeout.
 - width:        a bar-width override; 0 measures what the rest of the line leaves.
 - title:        a header row above the tree. Read on a root only.
 - final_depth:  how many levels of children a finished node keeps on screen.
@@ -367,6 +443,7 @@ function Progress(total::Union{Int, Nothing} = nothing;
                   vanish = 1.0,
                   vanish_timeout = nothing,
                   child_vanish = nothing,
+                  error_vanish = nothing,
                   width::Integer = 0,
                   fps::Real = 20.0,
                   flat_step::Integer = 10,
@@ -380,7 +457,8 @@ function Progress(total::Union{Int, Nothing} = nothing;
     fps > 0 || throw(ProgbioticError("fps must be positive; got ", fps))
 
     own = _resolve_vanish(vanish_timeout === nothing ? vanish : vanish_timeout)
-    opts = Opts(; vanish = own, dt = 1.0 / fps, flat_step = flat_step, width = width,
+    opts = Opts(; vanish = own, error_vanish = _resolve_error_vanish(error_vanish, own),
+                dt = 1.0 / fps, flat_step = flat_step, width = width,
                 tty = tty === nothing ? _is_tty(io) : Bool(tty), threaded = threaded)
     root = RootState(; title = title, final_depth = final_depth, style = style,
                      child_vanish = child_vanish === nothing ? own : child_vanish)
@@ -400,8 +478,9 @@ Hang a node under `parent` and return it.
 
 The child shares the tree: its stream, frame rate, flat step, tty mode and render task
 all come from the root. It takes `parent.theme` unless given one, and
-`parent.root.child_vanish` seconds of vanish unless given its own. The glyph keywords
-restyle a copy of the theme, exactly as the `Theme` copy constructor does.
+`parent.root.child_vanish` seconds of vanish unless given its own; `error_vanish`
+defaults to the parent's. The glyph keywords restyle a copy of the theme, exactly as
+the `Theme` copy constructor does.
 
 The node is pushed into `parent.children` under the root lock -- the same lock the
 render task copies it under -- so a bar may be added from any thread while the tree is
@@ -414,6 +493,7 @@ function child(parent::Progress, total::Union{Int, Nothing} = nothing;
                kind::Symbol = :bar,
                vanish = nothing,
                vanish_timeout = nothing,
+               error_vanish = nothing,
                width::Integer = 0,
                spinner = nothing, barunits = nothing, empty = nothing,
                caps = nothing, head = nothing)
@@ -421,7 +501,10 @@ function child(parent::Progress, total::Union{Int, Nothing} = nothing;
     resolved = vanish_timeout !== nothing ? _resolve_vanish(vanish_timeout) :
                vanish === nothing        ? root.child_vanish :
                                            _resolve_vanish(vanish)
-    opts = Opts(; vanish = resolved, dt = parent.opts.dt,
+    error_resolved = error_vanish === nothing ?
+                         parent.opts.error_vanish :
+                         _resolve_error_vanish(error_vanish, resolved)
+    opts = Opts(; vanish = resolved, error_vanish = error_resolved, dt = parent.opts.dt,
                 flat_step = parent.opts.flat_step, width = width,
                 tty = parent.opts.tty, threaded = parent.opts.threaded)
     node = _node(total, desc, _apply_style(theme, spinner, barunits, empty, caps, head),
@@ -478,7 +561,7 @@ end
 
 """The milestones under a node that have not finished yet."""
 _pending_milestones(parent::Progress) =
-    [kid for kid in children(parent) if ismilestone(kid) && !_completed(kid)]
+    [kid for kid in children(parent) if ismilestone(kid) && !_settled(kid)]
 
 # close a set of milestones. The container is refreshed by the caller, which is also what
 # adds a newly registered milestone to the count.
@@ -520,6 +603,113 @@ function _completed(node::Progress)
     return pbdone(node.state) >= total
 end
 
+"""
+    _settled(node) -> Bool
+
+Whether a node has stopped changing: it completed, or it registered an error. The
+renderer draws a settled node's last frame and starts its vanish timeout, but the
+progress readers keep their meaning: an errored bar is not `_completed`, and it is not
+`isfinished` either.
+"""
+_settled(node::Progress) = _completed(node) || haserror(node.state)
+
+"""
+    fail!(bar, err) -> bar
+
+Register an error against a bar, marking it failed without touching its counter.
+
+The do-block front-ends (`@progress`, `Progress(f, n)`, `prog(f, iter)`) call this
+themselves when the body throws. It is also the manual half of the error state: a bare
+`for x in prog(...)` runs its body outside the wrapper, so its own `catch` is where
+`fail!(it, err)` belongs, and a hand-driven `Progress(n)` might want it too.
+
+A bar keeps the first error registered against it. The exception's type and message are
+stored as an `ErrorInfo`, and the bar renders `ERROR: <Type>` in its time column, paints
+its bar red, and keeps its counter where it stopped: it is over, but not finished.
+"""
+function fail!(s::BarState, err)
+    _mark_failed!(s, err)
+    return s
+end
+
+function fail!(node::Progress, err)
+    fail!(node.state, err)
+    _record_failure!(node, err)
+    return node
+end
+
+function _mark_failed!(s::BarState, err)
+    info = _error_info(err)
+    @lock s.lock begin
+        s.error[] === nothing && (s.error[] = info)
+    end
+    s.finish[] == 0 && (s.finish[] = time())
+    return s
+end
+
+# the exception's type and the message showerror would print. A custom exception with a
+# broken showerror must not take the bar down as it is already going down, so the message
+# is guarded; only the type really matters.
+function _error_info(err)
+    err isa DataType && return ErrorInfo(err, "")
+    msg = try
+        sprint(showerror, err)
+    catch
+        ""
+    end
+    return ErrorInfo(typeof(err), msg)
+end
+
+# a snapshot of a live node that a descendant's failure marks red without erroring it
+function _tainted_snapshot(state::BarState)
+    snap = _snapshot(state)
+    snap.tainted = true
+    return snap
+end
+
+"""
+    _record_failure!(node, err)
+
+Freeze the chain from the tree's root down to `node`, once per exception. The innermost
+node calls this first as the exception unwinds, so the chain holds every bar at the state
+it had when the work died; outer levels that receive the same `err` afterwards are
+ignored. A standalone node is skipped, and a record is drawn only when the failure was
+caught inside the tree, since an escaped exception reproduces the live tree instead.
+"""
+function _record_failure!(node::Progress, err)
+    node.parent === nothing && return nothing
+    root = root_of(node)
+
+    @lock root.root.lock begin
+        any(record -> record.err === err, root.root.failures) && return nothing
+
+        rows = Tuple{Any, BarState}[]
+        current = node
+        while current !== nothing
+            state = current === node ? _snapshot(current.state) :
+                                       _tainted_snapshot(current.state)
+            pushfirst!(rows, (current, state))
+            current = current.parent
+        end
+        length(root.root.failures) >= _MAX_FAILURES && popfirst!(root.root.failures)
+        push!(root.root.failures, FailureRecord(err, rows))
+    end
+    return nothing
+end
+
+"""
+    _fail_pending_milestones!(parent, err)
+
+Register `err` against every milestone under `parent` that has not settled yet, so a
+block that threw does not leave its in-flight statement reading as still running.
+"""
+function _fail_pending_milestones!(parent::Progress, err)
+    for kid in _pending_milestones(parent)
+        fail!(kid, err)
+    end
+    return nothing
+end
+
 """Distance of a node from the top of its tree (roots are at depth 0)."""
 function node_depth(node::Progress)
     depth = 0
@@ -540,7 +730,8 @@ function Base.show(io::IO, node::Progress)
     print(io, "Progress(", repr(state.desc[]), ", ",
           state.total === nothing ? "indeterminate" :
                                     string(pbdone(state), "/", state.total), ", ",
-          isfinished(state) ? "finished" : "running")
+          isfinished(state) ? "finished" :
+          haserror(state)   ? "errored"  : "running")
     node.kind === :bar || print(io, ", ", node.kind)
     isempty(node.children) || print(io, ", ", length(node.children), " children")
     print(io, ")")

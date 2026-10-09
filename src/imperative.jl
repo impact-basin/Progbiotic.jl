@@ -15,7 +15,8 @@
 """
     Progress(f::Function, total = nothing; kwargs...)
 
-Run f(p) with a fresh bar, finishing it when f returns (or throws):
+Run f(p) with a fresh bar, finishing it when f returns and registering the error when
+f throws:
 
     Progress(100; desc = "Training") do p
         for i in 1:100
@@ -31,6 +32,9 @@ function Progress(f::Function, total::Union{Int, Nothing} = nothing; kwargs...)
     _with_scope(bar) do
         try
             f(bar)
+        catch err
+            fail!(bar, err)
+            rethrow()
         finally
             finish!(bar)
         end

@@ -91,12 +91,29 @@ end
 
 The lines the tree is about to occupy, clipped to the terminal and capped so the gutter
 can never leave the scroll region without a row to spare.
+
+A tree whose root has errored is drawn uncollapsed. An uncaught exception is the one time
+the whole live tree is worth reproducing, so the failing node's position is visible
+instead of hidden beneath the root's completion. A caught failure contributes a frozen
+record above the live tree instead, and the oldest records are shed first when the block
+does not fit.
 """
 function _gutter_lines(root::Progress, term_height::Int, term_width::Int)
-    text = render_tree(root; collapse = true, width = term_width)
+    # an escaped error reproduces the live tree; a caught one keeps its frozen records
+    escaped = haserror(root.state)
+    records = FailureRecord[]
+    if !escaped
+        records = @lock root.root.lock copy(root.root.failures)
+    end
+    text = render_tree(root; collapse = !escaped, width = term_width, records = records)
     isempty(text) && return String[]
     lines = split(chomp(text), '\n')
-    length(lines) <= term_height - 1 || (lines = lines[1:(term_height - 1)])
+    cap = term_height - 1
+    if length(lines) > cap
+        # records sit above the live tree, and the live tree is the part that has to stay;
+        # when the block does not fit, the oldest records fall off the top
+        lines = isempty(records) ? lines[1:cap] : lines[(length(lines) - cap + 1):end]
+    end
     return String[lines...]
 end
 
@@ -206,7 +223,8 @@ end
 
 Whether a node has earned another line of the non-interactive format: the first one, then
 one per flat_step percent, then the final 100%. An indeterminate node has no percentage
-to step through, so it emits a heartbeat once a second instead.
+to step through, so it emits a heartbeat once a second instead, and a settled node always
+gets its last line from the forced pass, which is how an error reaches a flat log.
 """
 function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec::Float64)
     paint    = node.paint
@@ -221,9 +239,9 @@ function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec
     # -1 for the whole run
     paint.last_flat == 0.0 && return true
     percentage < 0 &&
-        return !_completed(node) && (now_sec - paint.last_flat) >= 1.0
+        return !_settled(node) && (now_sec - paint.last_flat) >= 1.0
     percentage >= previous + node.opts.flat_step && return true
-    return _completed(node) && percentage >= 100 && previous < 100
+    return _settled(node) && percentage >= 100 && previous < 100
 end
 
 """
@@ -245,8 +263,8 @@ function _draw_flat!(root::Progress; force::Bool = false)
         _should_emit_flat(node, percentage, force, now_sec) || continue
         node.paint.flat_pct  = percentage
         node.paint.last_flat = now_sec
-        node.paint.flat_done = _completed(node)
-        print(buffer, render_flat_line(node, row.depth), "\n")
+        node.paint.flat_done = _settled(node)
+        print(buffer, render_flat_line(node, row.depth, row.state), "\n")
         wrote = true
     end
 
@@ -310,17 +328,18 @@ function _at_rest(root::Progress)
     return _all_complete(root, now_sec) && _all_forever(root, now_sec)
 end
 
-# every visible node, this one and its whole subtree, has finished
+# every visible node, this one and its whole subtree, has settled
 function _all_complete(node::Progress, now_sec::Float64)
     _visible(node, now_sec) || return true
-    _completed(node) || return false
+    _settled(node) || return false
     return all(child -> _all_complete(child, now_sec), children(node))
 end
 
 # no visible node is waiting out a finite vanish timeout
 function _all_forever(node::Progress, now_sec::Float64)
     _visible(node, now_sec) || return true
-    (_completed(node) && isinf(node.opts.vanish)) || return false
+    timeout = haserror(node.state) ? node.opts.error_vanish : node.opts.vanish
+    (_settled(node) && isinf(timeout)) || return false
     return all(child -> _all_forever(child, now_sec), children(node))
 end
 
@@ -397,6 +416,10 @@ end
 Mark a node complete: clamp its counter to its total, stamp the finish time, draw the
 final frame, and let the render task linger for the vanish timeout before erasing it.
 
+A node that has already registered an error is not clamped: its counter stays where the
+work stopped, and the frame drawn is the error frame. `fail!` and `finish!` are the two
+sides of the same teardown.
+
 `wait` blocks until the render task has handed the terminal back. It defaults to true for
 non-interactive output, where teardown is immediate and callers reasonably expect the
 final line to already be in the buffer, and to false for a terminal, where waiting would
@@ -412,12 +435,15 @@ function finish!(node::Progress; wait::Bool = !node.opts.tty)
     end
 
     state = node.state
-    total = state.total
-    total !== nothing && (state.current[] = total)
+    # an errored node keeps the counter where it stopped; only a successful finish clamps
+    if !haserror(state)
+        total = state.total
+        total !== nothing && (state.current[] = total)
+    end
     state.last_update = time()
     state.finish[] == 0 && (state.finish[] = time())
     # completed_at is deliberately left alone: the renderer stamps it on the tick that
-    # first sees the node finished, and that same tick is the one that draws it. Stamping
+    # first sees the node settled, and that same tick is the one that draws it. Stamping
     # here would mean a node with vanish = 0.0 was already gone before its final frame.
 
     # the final frame is drawn here rather than left to the task, so it lands whatever the

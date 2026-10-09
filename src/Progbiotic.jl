@@ -5,6 +5,7 @@ using MacroTools: @capture
 
 include("errors.jl")
 export ProgbioticError
+export ErrorInfo
 
 include("color.jl")
 
@@ -27,6 +28,7 @@ export duration_str
 include("bar.jl")
 export BarState
 export pbdone, pbtotal, pbfraction, pbrate, pbeta, pbelapsed, pbruntime, isfinished
+export haserror, pberror, fail!
 export Progress
 export child, children, root_of, node_depth
 

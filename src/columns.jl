@@ -148,6 +148,10 @@ Spinner(frames::AbstractVector; palette = RGB{N0f8}[], hz::Real = _SPINNER_HZ) =
     Spinner(String[string(f) for f in frames], palette, hz)
 
 function render_column(col::Spinner, state::BarState)
+    # a failed bar does not spin: it stands still on the error glyph, and so does an
+    # ancestor standing in for a failed descendant
+    istainted(state) && return string(_ERROR_FG, "!", _ANSI_RESET)
+
     frames = col.frames
     index = mod(floor(Int, time() * col.hz), length(frames)) + 1
     isempty(col.palette) && return frames[index]
@@ -259,13 +263,18 @@ function Bar(units::AbstractVector, empty::Char, palette::AbstractVector{P},
     return Bar(Char[units...], empty, Vector{P}(palette), caps, head, max(1, width))
 end
 
-render_column(col::Bar, state::BarState) = _bar_frame(col, pbfraction(state))
+render_column(col::Bar, state::BarState) =
+    _bar_frame(col, pbfraction(state), istainted(state))
 
 _fg(col::Bar, t::Real) = palette_gradient(col.palette, float(t))
 _track(col::Bar) = isempty(col.palette) ? "" : ansi_fg(col.palette[begin])
 
-function _bar_frame(col::Bar, fraction::Union{Float64, Nothing})
-    fraction === nothing && return _marquee(col)
+# a failed bar keeps its fraction but paints the fill the one error colour, whatever the
+# theme's palette is
+_fill_fg(col::Bar, t::Real, errored::Bool) = errored ? _ERROR_FG : _fg(col, t)
+
+function _bar_frame(col::Bar, fraction::Union{Float64, Nothing}, errored::Bool = false)
+    fraction === nothing && return _marquee(col, errored)
 
     units = col.units
     width = col.width
@@ -287,11 +296,12 @@ function _bar_frame(col::Bar, fraction::Union{Float64, Nothing})
     end
 
     trailing = max(0, width - full - (rem_s > 0 ? 1 : 0))
-    return _frame(col, filled, repeat(string(col.empty), trailing), _fg(col, fraction))
+    return _frame(col, filled, repeat(string(col.empty), trailing),
+                  _fill_fg(col, fraction, errored))
 end
 
 # no total: sweep a block back and forth so the bar still moves
-function _marquee(col::Bar)
+function _marquee(col::Bar, errored::Bool = false)
     width = col.width
     block = max(1, width ÷ 4)
     span = max(1, width - block)
@@ -301,7 +311,7 @@ function _marquee(col::Bar)
     return _frame(col,
                   repeat(string(col.units[end]), block),
                   repeat(string(col.empty), max(0, span - position)),
-                  _fg(col, 0.0);
+                  _fill_fg(col, 0.0, errored);
                   leading = repeat(string(col.empty), position))
 end
 
@@ -392,16 +402,21 @@ end
 """
     Eta() -> Eta
 
-The time column, in whichever of the three states a node is in: "ETA: 1.2s"
-extrapolated from the average rate so far, "done in 1.2s" once it has finished, and
-"(elapsed: 1.2s)" for an indeterminate node, which has no end to count down to.
-Durations carry sub-second precision rather than an HH:MM:SS that reads 00:00:00.
+The time column, in whichever of the states a node is in: "ETA: 1.2s" extrapolated
+from the average rate so far, "done in 1.2s" once it has finished, "(elapsed: 1.2s)"
+for an indeterminate node, and "ERROR: <Type>" once it has failed, which is the one
+thing a failed node needs to say instead of a time. Durations carry sub-second
+precision rather than an HH:MM:SS that reads 00:00:00.
 """
 struct Eta <: AbstractColumn end
 
 function render_column(::Eta, state::BarState)
+    err = pberror(state)
+    # a failed node shows the error rather than a time it will never reach
+    err === nothing || return string("ERROR: ", err.type)
+
     total = pbtotal(state)
-    # the time column, in all three of the states a node can be in
+    # the time column, in all of the states a node can be in
     if total === nothing
         isfinished(state) && return string("done in ", _duration(state))
         return string("(elapsed: ", _duration(state), ")")
