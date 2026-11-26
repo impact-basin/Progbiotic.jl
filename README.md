@@ -1,6 +1,6 @@
 # Progbiotic.jl: neat progress bars.
 
-This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM and macro interfaces.
+This package implements thread-safe progress bars. These bars can be nested into a tree structure. There are TQDM-esque and macro interfaces.
 
 A quick example:
 
@@ -92,6 +92,11 @@ end
 end
 ```
 
+Loop and block context names such as `ctx` are local to their progress bodies. Nested
+levels get their own binding, so concurrent branches do not overwrite each other's
+contexts or an enclosing variable. To keep a handle after its scope, store it in a `Ref`
+inside the body. Bare milestone statements still bind names for subsequent statements.
+
 ## Short form options
 
 The `@progress` keyword options accept short aliases. This is so my fingers don't get tired :-).
@@ -108,8 +113,7 @@ The `@progress` keyword options accept short aliases. This is so my fingers don'
 `v` can be set to a number or a boolean. A number sets the vanish timeout in seconds and a boolean
 switches vanishing on/off.
 
-`ev` is the same for errored bars, which stay on screen by default: `ev=true` lets one
-vanish with its node's own timeout, and `ev=<seconds>` gives it a timeout of its own.
+`ev` is the same for errored bars, but they stay on-screen by default.
 
 ## Usage (a la TQDM)
 
@@ -142,8 +146,8 @@ end
 ```
 
 Collections with a known length (`HasLength` or `HasShape`) get a determinate bar
-with a percentage, a rate and an ETA. Unbounded or size-unknown sources - e.g.
-`Channel` or `Iterators.filter` - get an indeterminate spinner instead:
+with a percentage, a rate and an ETA. Unbounded sources (e.g. `Channel` or `Iterators.filter`)
+get an indeterminate spinner instead:
 
 ```julia
 stream = Channel(ch -> foreach(i -> put!(ch, i), 1:500))
@@ -154,19 +158,33 @@ end
 ```
 
 `prog` forwards shape traits, so comprehensions, `collect`,
-indexing and `Threads.@threads` behave as they do on the collection itself:
+indexing and `Threads.@threads` behave themselves:
 
 ```julia
 squares = [x^2 for x in prog(1:9001; desc = "Squaring")]
 
-Threads.@threads for i in prog(1:10_000; desc = "Parallel")
-    # ...
+it = prog(1:10_000; desc = "Parallel")
+try
+    Threads.@threads for i in it
+        # ...
+    end
+    finish!(it)
+catch err
+    fail!(it, err)
+    rethrow()
+finally
+    cancel!(it)
 end
 ```
 
-Pass `total=n` to override the inference, or `total=nothing` to force spinner mode
-on a collection that does have a length. There is also a do-block form, which finishes
-the bar when the block returns:
+Indexed consumption, including `Threads.@threads`, does not tell an iterator when
+the final body returns. Finish or cancel its handle explicitly; fetching the last item
+alone does not declare success. `@progress ... Threads.@threads for ... end` manages
+that scope automatically.
+
+Pass `total=n` to override the displayed total, or `total=nothing` to force spinner mode
+on a collection that does have a length. Neither changes the collection's length, shape,
+or elements. There is also a do-block form, which finishes the bar when the block returns:
 
 ```julia
 prog(1:100; desc = "Training") do x
@@ -184,9 +202,9 @@ for i in 1:100
     next!(p)              # advance by one
 end
 finish!(p)
-
-update!(p, 42)            # or set an absolute value
 ```
+
+Use `update!(p, value)` to set an absolute counter while the bar is running.
 
 `next!` is thread safe:
 
@@ -226,8 +244,7 @@ end
 
 ## Errors
 
-A bar whose body throws does not read as complete: its counter stops where work stopped,
-and the error is shown.
+A bar whose body throws is incomplete. Its counter stops and the error is shown.
 
 ```julia
 @progress "Working" for k in 1:100
@@ -237,6 +254,35 @@ end
 
 This draws the whole live tree one last time rather than collapsing to
 the root, so the failing node's position is visible.
+
+## Completion And Cancellation
+
+`pbstatus(p)` returns `:running`, `:succeeded`, `:failed`, `:cancelled`, or `:interrupted`.
+`isfinished(p)` means success; `haserror(p)` means failure. `pberror(p)` also retains
+information about an `InterruptException`, whose outcome is `:interrupted`.
+
+A manual `Progress(n)` succeeds when its counter reaches `n`. Scoped bars remain running
+until normal scope exit or iterator exhaustion, even if the displayed fraction is 100%.
+Normal scope exit preserves the actual counter. A do-block function's non-throwing
+return declares success; the function interface cannot distinguish an early `return`
+from its ordinary return. An explicit `finish!(p)` declares success and fills a successful
+bar's counter to its total, but never converts failure or cancellation into success.
+
+A `break` or early `return` from a macro loop, or an early `return` from a macro block,
+cancels that scope and preserves partial progress. `cancel!(p)` does the same explicitly.
+For a bare iterator, call `cancel!` after breaking out; exceptions in the consumer's
+body require an explicit `fail!` in its handler. Exceptions produced by the iterator
+itself are handled automatically.
+
+Scoped exit cancels unfinished child bars and releases the renderer without waiting
+for abandoned work. Cancellation changes reporting only: it does not kill Julia tasks.
+Stop those tasks cooperatively and do not continue advancing terminal handles. A raw
+manual root's `finish!` still waits for independently running children when `wait=true`.
+
+An escaping exception is rethrown after best-effort cleanup. A caught child failure can
+remain in the tree's frozen history while its parent continues. Public `fail!` reports
+are independent across nodes; repeating it on an already-failed node keeps the first
+error. Automatic outward propagation retains one deepest frozen chain per occurrence.
 
 # AI use.
 

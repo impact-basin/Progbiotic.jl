@@ -76,6 +76,7 @@ function _refresh_timing!(node::Progress)
         node.paint.count = count
         state.last_update = time()
     end
+    isfinished(state) && state.finish[] == 0 && _finish_state!(state; clamp = false)
     for kid in children(node)
         _refresh_timing!(kid)
     end
@@ -198,7 +199,11 @@ function _release_gutter!(root::Progress; keep::Bool = true)
     term_height, term_width = displaysize(io)
     buffer = IOBuffer()
 
-    lines = keep && term_height > 0 ? _gutter_lines(root, term_height, term_width) : String[]
+    lines = try
+        keep && term_height > 0 ? _gutter_lines(root, term_height, term_width) : String[]
+    catch
+        String[]
+    end
     if isempty(lines)
         # the tree has gone, or was never wanted: clear the rows it was using and park
         # where they were, so later output starts there
@@ -223,25 +228,25 @@ end
 
 Whether a node has earned another line of the non-interactive format: the first one, then
 one per flat_step percent, then the final 100%. An indeterminate node has no percentage
-to step through, so it emits a heartbeat once a second instead, and a settled node always
-gets its last line from the forced pass, which is how an error reaches a flat log.
+to step through, so it emits a heartbeat once a second instead. A settled node always gets
+its last line, which is how an error reaches a flat log.
 """
-function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec::Float64)
+function _should_emit_flat(node::Progress, percentage::Int, force::Bool, now_sec::Float64,
+                           settled::Bool = _settled(node), status::Symbol = pbstatus(node))
     paint    = node.paint
     previous = paint.flat_pct
+    status !== :running && status !== paint.flat_status && return true
 
     # the forced pass writes the final state, which earns a line only if it is not the one
     # already written: a determinate node climbs to 100, and an indeterminate one stops
     # reading "elapsed" and starts reading "done in"
-    force && return previous < 100 && !paint.flat_done
+    (force || settled) && return previous < 100 && !paint.flat_done
     # last_flat is stamped only when a line is actually written, so it is what tells a
     # node that has never announced itself from one that is indeterminate and sitting at
     # -1 for the whole run
     paint.last_flat == 0.0 && return true
-    percentage < 0 &&
-        return !_settled(node) && (now_sec - paint.last_flat) >= 1.0
-    percentage >= previous + node.opts.flat_step && return true
-    return _settled(node) && percentage >= 100 && previous < 100
+    percentage < 0 && return (now_sec - paint.last_flat) >= 1.0
+    return percentage >= previous + node.opts.flat_step
 end
 
 """
@@ -259,11 +264,14 @@ function _draw_flat!(root::Progress; force::Bool = false)
 
     for row in _tree_rows(root, symbols, false, now_sec)
         node = row.node
-        percentage = flat_percentage(node)
-        _should_emit_flat(node, percentage, force, now_sec) || continue
+        percentage = flat_percentage(row.state)
+        settled = _settled(row.state)
+        status = pbstatus(row.state)
+        _should_emit_flat(node, percentage, force, now_sec, settled, status) || continue
         node.paint.flat_pct  = percentage
         node.paint.last_flat = now_sec
-        node.paint.flat_done = _settled(node)
+        node.paint.flat_done = settled
+        node.paint.flat_status = status
         print(buffer, render_flat_line(node, row.depth, row.state), "\n")
         wrote = true
     end
@@ -278,10 +286,19 @@ function _draw_flat!(root::Progress; force::Bool = false)
     return true
 end
 
-"""Draw one frame, in whichever mode the tree is in."""
+"""Draw one frame and acknowledge requests sampled before it started."""
 function render_tick!(root::Progress; force::Bool = false)
-    _refresh_timing!(root)
-    return root.opts.tty ? _draw_tty!(root) : _draw_flat!(root; force = force)
+    state = root.root
+    request = @lock state.lock state.requested
+    try
+        _refresh_timing!(root)
+        return root.opts.tty ? _draw_tty!(root) : _draw_flat!(root; force = force)
+    finally
+        @lock state.lock begin
+            state.drawn = request
+            notify(state.frame; all = true)
+        end
+    end
 end
 
 # ---------------------------------------------------------------------------
@@ -303,11 +320,15 @@ A node never starts a task of its own. Children share the root's, which is a pro
 the RootState they all hold rather than a convention someone has to remember.
 """
 function start_render!(root::Progress; threaded::Bool = root.opts.threaded)
+    root = root_of(root)
     state = root.root
-    state.task === nothing || return state.task
-    state.running[] = true
-    state.task = threaded ? Threads.@spawn(_render_loop(root)) : (@async _render_loop(root))
-    return state.task
+    @lock state.lock begin
+        state.task === nothing || return state.task
+        reset(state.wake)
+        state.running[] = true
+        state.task = threaded ? Threads.@spawn(_render_loop(root)) : (@async _render_loop(root))
+        return state.task
+    end
 end
 
 """
@@ -338,38 +359,33 @@ end
 # no visible node is waiting out a finite vanish timeout
 function _all_forever(node::Progress, now_sec::Float64)
     _visible(node, now_sec) || return true
+    _settled(node) || return false
+
+    kids = children(node)
+    all(child -> _all_forever(child, now_sec), kids) || return false
+
     timeout = haserror(node.state) ? node.opts.error_vanish : node.opts.vanish
-    (_settled(node) && isinf(timeout)) || return false
-    return all(child -> _all_forever(child, now_sec), children(node))
+    return isinf(timeout) ||
+           (node.parent !== nothing && node_depth(node) <= node.root.final_depth) ||
+           any(child -> _visible(child, now_sec), kids)
 end
 
 """
     _render_loop(root)
 
-The frame-rate-limited render loop. It ticks at most 1 / dt times a second and hands the
+The render loop ticks every dt seconds, or sooner for an explicit flush, and hands the
 terminal back as soon as there is nothing left that could change.
 """
 function _render_loop(root::Progress)
-    drew_final = false
+    state = root.root
+    timer = nothing
     try
-        while root.root.running[]
-            if root.opts.tty
-                # the gutter is ours to redraw, and redrawing it is what erases a node
-                # whose vanish timeout has run out
-                render_tick!(root)
-            elseif _all_complete(root, time())
-                # a flat log is append-only, so the finished tree writes exactly one
-                # final line and then stops
-                if !drew_final
-                    render_tick!(root; force = true)
-                    drew_final = true
-                end
-            else
-                render_tick!(root)
-                drew_final = false
-            end
+        dt = max(root.opts.dt, 0.001)
+        timer = Timer(_ -> notify(state.wake), dt; interval = dt)
+        while state.running[]
+            render_tick!(root)
             _at_rest(root) && break
-            sleep(root.opts.dt)
+            wait(state.wake)
         end
     catch err
         # rendering must never take the user's computation down with it, and it must not
@@ -379,19 +395,109 @@ function _render_loop(root::Progress)
         catch
         end
     finally
-        try
-            # A flat log is append-only and this is its last chance to write the final
-            # state. Two ways out miss it otherwise: the tree coming to rest during a draw,
-            # which breaks the loop before the forced pass at the top can run again, and a
-            # scope ending while the loop is asleep -- with dt at 50ms and a shorter scope,
-            # the task never wakes up again and the nodes registered after its last tick
-            # would never be written at all.
-            root.opts.tty || drew_final || render_tick!(root; force = true)
-        catch
+        timer === nothing || close(timer)
+        # requests arriving during the final draw must be flushed before ownership ends
+        while true
+            try
+                render_tick!(root; force = true)
+            catch
+            end
+            try
+                _release_gutter!(root)
+            catch
+            end
+            @lock state.lock begin
+                state.drawn < state.requested && continue
+                state.running[] = false
+                state.task = nothing
+                notify(state.frame; all = true)
+                break
+            end
         end
-        try
-            _release_gutter!(root)
-        catch
+    end
+    return nothing
+end
+
+"""Stamp completion without clamping failed counters; report whether a final frame is due."""
+function _finish_state!(state::BarState; clamp::Bool = true)
+    @lock state.lock begin
+        if state.status === :succeeded
+            total = state.total
+            clamp && total !== nothing && state.current[] != total || return false
+            state.current[] = total
+            return true
+        end
+        state.status !== :running && state.finish[] > 0 && return false
+        if state.status === :running
+            total = state.total
+            clamp && total !== nothing && (state.current[] = total)
+            state.status = :succeeded
+        end
+        state.finish[] == 0 && (state.finish[] = time())
+    end
+    return true
+end
+
+function _cancel_state!(state::BarState)
+    @lock state.lock begin
+        pbstatus(state) === :running || return false
+        state.status = :cancelled
+        state.finish[] = time()
+    end
+    return true
+end
+
+function _cancel_descendants!(node::Progress)
+    changed = false
+    for kid in children(node)
+        changed |= _cancel_descendants!(kid)
+        changed |= _cancel_state!(kid.state)
+    end
+    return changed
+end
+
+function _request_frame!(node::Progress)
+    @lock node.root.lock begin
+        node.root.requested += 1
+        notify(node.root.wake)
+    end
+    return nothing
+end
+
+"""
+    cancel!(bar; wait = !bar.opts.tty)
+
+End reporting without filling the counter, retaining partial progress. Unfinished child
+bars are cancelled too. This does not stop Julia tasks: callers must stop their work
+cooperatively and must not continue advancing terminal handles. Cancellation is terminal;
+`finish!` does not turn it into success.
+"""
+function cancel!(node::Progress; wait::Bool = !node.opts.tty)
+    changed = _cancel_descendants!(node)
+    changed |= _cancel_state!(node.state)
+    changed && _request_frame!(node)
+    _finish!(node; wait, clamp = false)
+    return node
+end
+
+# scope cleanup must not replace an exception already unwinding through user code
+function _close_scope!(node::Progress; completed::Bool)
+    try
+        if completed && pbstatus(node) === :running
+            _complete_statement_jobs!(node)
+            _finish_state!(node.state; clamp = iscontainer(node))
+        elseif !completed
+            _cancel_state!(node.state)
+        end
+        _cancel_descendants!(node)
+    catch
+    finally
+        if node.parent === nothing
+            _clear_failure!(node)
+            try
+                stop_render!(node)
+            catch
+            end
         end
     end
     return nothing
@@ -413,59 +519,52 @@ end
 """
     finish!(node::Progress; wait = !node.opts.tty)
 
-Mark a node complete: clamp its counter to its total, stamp the finish time, draw the
-final frame, and let the render task linger for the vanish timeout before erasing it.
+Mark a node complete: clamp its counter to its total and stamp the finish time. The
+render task draws its final frame and handles the vanish timeout.
 
 A node that has already registered an error is not clamped: its counter stays where the
 work stopped, and the frame drawn is the error frame. `fail!` and `finish!` are the two
 sides of the same teardown.
 
-`wait` blocks until the render task has handed the terminal back. It defaults to true for
-non-interactive output, where teardown is immediate and callers reasonably expect the
-final line to already be in the buffer, and to false for a terminal, where waiting would
-block for the whole vanish timeout for no reason.
+For a root, `wait` blocks until the render task has handed the terminal back. For a child,
+it requests and waits for a frame containing its completion, without waiting for its
+parent to finish.
+It defaults to true for non-interactive output and false for a terminal. With no renderer
+(`start = false`), children only update state; finishing the root flushes the tree.
 """
 function finish!(node::Progress; wait::Bool = !node.opts.tty)
-    top  = root_of(node)
-    task = top.root.task
+    return _finish!(node; wait, clamp = true)
+end
 
-    if isfinished(node.state)
-        wait && task !== nothing && _wait_quietly(task)
+function _finish!(node::Progress; wait::Bool, clamp::Bool)
+    if node.parent !== nothing && !wait
+        _finish_state!(node.state; clamp)
         return nothing
     end
 
-    state = node.state
-    # an errored node keeps the counter where it stopped; only a successful finish clamps
-    if !haserror(state)
-        total = state.total
-        total !== nothing && (state.current[] = total)
+    top = root_of(node)
+    root = top.root
+    task = @lock root.lock begin
+        fresh = _finish_state!(node.state; clamp)
+        if node === top
+            fresh && (root.requested += 1)
+            if fresh || root.requested > root.drawn
+                start_render!(top)
+                notify(root.wake)
+            end
+        elseif root.task !== nothing && current_task() !== root.task
+            root.requested += 1
+            request = root.requested
+            notify(root.wake)
+            while root.task !== nothing && root.drawn < request
+                Base.wait(root.frame)
+            end
+        end
+        root.task
     end
-    state.last_update = time()
-    state.finish[] == 0 && (state.finish[] = time())
-    # completed_at is deliberately left alone: the renderer stamps it on the tick that
-    # first sees the node settled, and that same tick is the one that draws it. Stamping
-    # here would mean a node with vanish = 0.0 was already gone before its final frame.
-
-    # the final frame is drawn here rather than left to the task, so it lands whatever the
-    # node's vanish timeout is: with vanish = 0.0 the task could already consider the tree
-    # gone by the time it next woke up. A second draw is harmless -- the flat renderer
-    # dedupes on the percentage it last announced, and the gutter is ours to redraw.
-    render_tick!(top; force = true)
-
-    wait && task !== nothing && _wait_quietly(task)
-    return _release_empty_gutter!(top)
-end
-
-# hand the gutter back when it is still reserved but has nothing left to show.
-#
-# the final frame above can redraw a gutter the render task had already released: a node
-# with vanish = 0.0 is erased on the very tick that notices it finished, and if that tick
-# won the race there is nothing running afterwards to erase the frame drawn here. This is
-# the reconciliation, and it is a no-op in the ordinary case where the tree is still there.
-function _release_empty_gutter!(root::Progress)
-    (root.root.rows == 0 || !root.opts.tty) && return nothing
-    isempty(_gutter_lines(root, displaysize(root.io)...)) || return nothing
-    return _release_gutter!(root)
+    node === top && wait && task !== nothing && task !== current_task() && _wait_quietly(task)
+    node === top && _clear_failure!(node)
+    return nothing
 end
 
 """
@@ -478,15 +577,14 @@ the "tear down now" path, used when a scope ends or a bar is abandoned.
 function stop_render!(node::Progress)
     top   = root_of(node)
     state = top.root
-    state.running[] = false
-    task  = state.task
-    state.task = nothing
-
-    if task === nothing
-        _release_gutter!(top)
-    else
-        _wait_quietly(task)
+    task = @lock state.lock begin
+        current_task() === state.task || (state.requested += 1)
+        task = start_render!(top)
+        state.running[] = false
+        notify(state.wake)
+        task
     end
+    task === current_task() || _wait_quietly(task)
     return nothing
 end
 

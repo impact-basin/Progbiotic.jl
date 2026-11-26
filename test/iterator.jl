@@ -64,6 +64,50 @@ using Test
         finish!(custom)
     end
 
+    @testset "display totals do not change collection contents or shape" begin
+        for data in ((1, 2, 3, 4, 5, 6), collect(1:6), reshape(1:6, 2, 3)),
+            total in (2, 10, nothing),
+            transform in (collect, xs -> [x^2 for x in xs])
+
+            it = prog(data; total = total, io = sink(), vanish = 0.0)
+            try
+                @test pbtotal(it) === total
+                @test length(it) == length(data)
+                @test Base.IteratorSize(typeof(it)) == Base.IteratorSize(typeof(data))
+                if data isa AbstractArray
+                    @test size(it) == size(data)
+                    @test axes(it) == axes(data)
+                end
+                # collect may use unchecked writes when the length contract is broken
+                if length(it) == length(data)
+                    @test transform(it) == transform(data)
+                end
+            finally
+                finish!(it)
+            end
+        end
+    end
+
+    @testset "display totals do not change threaded work" begin
+        for data in ((1, 2, 3, 4, 5, 6), collect(1:6), reshape(1:6, 2, 3)),
+            total in (2, 10, nothing)
+
+            it = prog(data; total = total, io = sink(), vanish = 0.0)
+            seen = zeros(Int, length(data))
+            try
+                @test length(it) == length(data)
+                if length(it) == length(data)
+                    Base.Threads.@threads for x in it
+                        seen[x] += 1
+                    end
+                    @test seen == ones(Int, length(data))
+                end
+            finally
+                finish!(it)
+            end
+        end
+    end
+
     @testset "progress advances exactly once per item" begin
         it = prog(1:37; io = sink(), vanish = 0.0)
         for _ in it
