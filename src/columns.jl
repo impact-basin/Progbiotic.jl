@@ -134,26 +134,45 @@ percentage to advance.
 
 Styles: :dots, :line, :dots2, :arc, :circle, :clock, :moon, :bounce, :grow, :blocks,
 :arrow, :bounce2. Pass `frames` to use a theme's own glyphs, as `theme_layout` does.
+
+The frame collection must be nonempty; wide glyphs such as emoji are allowed.
+`hz` must be finite. Zero holds the first frame, and negative values reverse the
+animation.
 """
 struct Spinner{P<:Colorant} <: AbstractColumn
     frames  :: Vector{String}
     palette :: Vector{P}
     hz      :: Float64
+
+    function Spinner{P}(frames, palette, hz) where {P<:Colorant}
+        col = new{P}(frames, palette, hz)
+        isempty(col.frames) && throw(ProgbioticError("a Spinner needs at least one frame"))
+        isfinite(col.hz) || throw(ProgbioticError("spinner frequency must be finite"))
+        return col
+    end
 end
 
+Spinner(frames::Vector{String}, palette::Vector{P}, hz::Float64) where {P<:Colorant} =
+    Spinner{P}(frames, palette, hz)
+
 Spinner(style::Symbol = :dots; palette = RGB{N0f8}[], hz::Real = _SPINNER_HZ) =
-    Spinner(_spinner_frames(style), palette, hz)
+    Spinner(_spinner_frames(style), palette, Float64(hz))
 
 Spinner(frames::AbstractVector; palette = RGB{N0f8}[], hz::Real = _SPINNER_HZ) =
-    Spinner(String[string(f) for f in frames], palette, hz)
+    Spinner(String[string(f) for f in frames], palette, Float64(hz))
 
 function render_column(col::Spinner, state::BarState)
     # a failed bar does not spin: it stands still on the error glyph, and so does an
     # ancestor standing in for a failed descendant
     istainted(state) && return string(_ERROR_FG, "!", _ANSI_RESET)
+    pbstatus(state) === :cancelled && return "-"
 
     frames = col.frames
-    index = mod(floor(Int, time() * col.hz), length(frames)) + 1
+    t = time()
+    ticks = t * col.hz
+    # reduce the time first only when the product overflows
+    isfinite(ticks) || (ticks = mod(t, length(frames) / abs(col.hz)) * col.hz)
+    index = Int(mod(floor(ticks), length(frames))) + 1
     isempty(col.palette) && return frames[index]
 
     # the glyph walks the palette, so an idle bar still reads as alive
@@ -194,21 +213,21 @@ Tag(; template::AbstractString = "{desc}", width::Int = 0, bold::Bool = false) =
 
 function render_column(col::Tag, state::BarState)
     text = strip(_interpolate(col.template, state))
-    col.width == 0 || (text = rpad(text, col.width))
+    text = _rpad_text(text, col.width)
     # bold is off unless asked for: an unstyled column emits no escape sequences at all,
     # and it is the theme's layout that turns it on for a description.
     return col.bold ? string(_ANSI_BOLD, text, _ANSI_RESET) : text
 end
 
 function _interpolate(template::AbstractString, state::BarState)
-    text = template
-    occursin("{desc}", text)    && (text = replace(text, "{desc}"    => state.desc[]))
-    occursin("{n}", text)       && (text = replace(text, "{n}"       => string(pbdone(state))))
-    occursin("{total}", text)   && (text = replace(text, "{total}"   => _total_text(state)))
-    occursin("{pct}", text)     && (text = replace(text, "{pct}"     => _percent_text(state, 1)))
-    occursin("{elapsed}", text) && (text = replace(text, "{elapsed}" => _format_hms(pbruntime(state))))
-    occursin("{postfix}", text) && (text = replace(text, "{postfix}" => postfix_text(state)))
-    return text
+    return replace(template, r"\{(?:desc|n|total|pct|elapsed|postfix)\}" => key -> begin
+        key == "{desc}"    && return _safe_text(state.desc[])
+        key == "{n}"       && return string(pbdone(state))
+        key == "{total}"   && return _total_text(state)
+        key == "{pct}"     && return _percent_text(state, 1)
+        key == "{elapsed}" && return _format_hms(pbruntime(state))
+        return _safe_text(postfix_text(state))
+    end)
 end
 
 _total_text(state::BarState) = pbtotal(state) === nothing ? "" : string(pbtotal(state))
@@ -231,8 +250,10 @@ const _MARQUEE_HZ = 10.0
     Bar(; fill = '█', empty = '░', width = 30) -> Bar
     Bar(units, empty, palette[, caps, head]; width = 30) -> Bar
 
-The bar itself, as a run of `width` characters framed by `caps` and tipped with
-`head`.
+The bar itself, as a run of `width` terminal cells framed by `caps` and tipped with
+`head`. Fill units, the empty glyph, caps, and an optional head must each be a valid,
+non-control character occupying exactly one terminal cell. The fill-unit collection
+must be nonempty. Convenience constructors clamp `width` to at least one.
 
 The single-glyph form is the plain bar. The `units` form is the themed one: a stipple
 series from low to high fill, giving sub-character resolution, with the filled run
@@ -249,7 +270,24 @@ struct Bar{P<:Colorant} <: AbstractColumn
     caps    :: Tuple{Char, Char}
     head    :: Union{Char, Nothing}
     width   :: Int
+
+    function Bar{P}(units, empty, palette, caps, head, width) where {P<:Colorant}
+        col = new{P}(units, empty, palette, caps, head, width)
+        isempty(col.units) && throw(ProgbioticError("a Bar needs at least one fill glyph"))
+        col.width >= 1 || throw(ProgbioticError("bar width must be positive"))
+        glyphs = Iterators.flatten((col.units, (col.empty, col.caps...),
+                                    col.head === nothing ? () : (col.head,)))
+        for c in glyphs
+            (isvalid(c) && !iscntrl(c) && _grapheme_width(string(c)) == 1) ||
+                throw(ProgbioticError("bar glyphs must each occupy exactly one terminal cell"))
+        end
+        return col
+    end
 end
+
+Bar(units::Vector{Char}, empty::Char, palette::Vector{P}, caps::Tuple{Char, Char},
+    head::Union{Char, Nothing}, width::Int) where {P<:Colorant} =
+    Bar{P}(units, empty, palette, caps, head, width)
 
 Bar(; fill::Char = '█', empty::Char = '░', width::Int = 30) =
     Bar([fill], empty, RGB{N0f8}[], (' ', ' '), nothing, max(1, width))
@@ -259,7 +297,6 @@ Bar(fill::Char, empty::Char, width::Int) = Bar(; fill = fill, empty = empty, wid
 function Bar(units::AbstractVector, empty::Char, palette::AbstractVector{P},
              caps::Tuple{Char, Char} = (' ', ' '), head::Union{Char, Nothing} = nothing;
              width::Int = 30) where {P<:Colorant}
-    isempty(units) && throw(ProgbioticError("a Bar needs at least one fill glyph"))
     return Bar(Char[units...], empty, Vector{P}(palette), caps, head, max(1, width))
 end
 
@@ -304,9 +341,9 @@ end
 function _marquee(col::Bar, errored::Bool = false)
     width = col.width
     block = max(1, width ÷ 4)
-    span = max(1, width - block)
+    span = width - block
     period = 2 * span
-    tick = mod(floor(Int, time() * _MARQUEE_HZ), period)
+    tick = iszero(span) ? 0 : mod(floor(Int, time() * _MARQUEE_HZ), period)
     position = tick <= span ? tick : period - tick     # triangle wave: no jump at the ends
     return _frame(col,
                   repeat(string(col.units[end]), block),
@@ -396,7 +433,7 @@ function render_column(col::Rate, state::BarState)
     text = _format_rate(pbrate(state), col.unit)
     isempty(text) && return ""
     # bracketed and padded, so the times to the right of it line up down the tree
-    return string("[", rpad(text, col.pad), "]")
+    return string("[", _rpad_text(text, col.pad), "]")
 end
 
 """
@@ -404,13 +441,16 @@ end
 
 The time column, in whichever of the states a node is in: "ETA: 1.2s" extrapolated
 from the average rate so far, "done in 1.2s" once it has finished, "(elapsed: 1.2s)"
-for an indeterminate node, and "ERROR: <Type>" once it has failed, which is the one
-thing a failed node needs to say instead of a time. Durations carry sub-second
-precision rather than an HH:MM:SS that reads 00:00:00.
+for an indeterminate node, and "ERROR: <Type>" once it has failed. Cancellation and
+interruption show their outcome and frozen elapsed time. A saturated scoped bar still
+shows elapsed time until the body returns. Durations carry sub-second precision.
 """
 struct Eta <: AbstractColumn end
 
 function render_column(::Eta, state::BarState)
+    status = pbstatus(state)
+    status === :cancelled && return string("cancelled after ", _duration(state))
+    status === :interrupted && return string("interrupted after ", _duration(state))
     err = pberror(state)
     # a failed node shows the error rather than a time it will never reach
     err === nothing || return string("ERROR: ", err.type)
@@ -421,7 +461,8 @@ function render_column(::Eta, state::BarState)
         isfinished(state) && return string("done in ", _duration(state))
         return string("(elapsed: ", _duration(state), ")")
     end
-    pbdone(state) >= total && return string("done in ", _duration(state))
+    isfinished(state) && return string("done in ", _duration(state))
+    pbdone(state) >= total && return string("(elapsed: ", _duration(state), ")")
 
     eta = pbeta(state)
     eta === nothing && return "ETA: N/A"

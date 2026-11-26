@@ -271,16 +271,37 @@ end
 Constructs the iteration loop that updates `job_sym` after every iteration of the
 transformed body, so the progress start and completion are still reported
 correctly. The loop may be re-wrapped by the caller's macros (e.g.
-`Threads.@threads`, `Base.@sync`), which is how multithreading is expressed.
+`Threads.@threads`, `Base.@sync`), which is how multithreading is expressed. Wrapped
+iterations install the active bar in the task that actually executes their body.
 """
 function _build_loop_expr(var, iter_sym, new_body, job_sym, wrappers)
+    exhausted = gensym("exhausted")
+    if !isempty(wrappers)
+        saved_bar = gensym("saved_bar")
+        new_body = quote
+            let $saved_bar = $(_p(:_install_bar!))($job_sym)
+                try
+                    $new_body
+                finally
+                    $(_p(:_restore_bar!))($saved_bar)
+                end
+            end
+        end
+    end
+
     loop = :(
-        for $var in $iter_sym
+        for $var in $(_p(:_ScopeIterator))($iter_sym, $exhausted)
             $new_body
             $(_p(:next!))($job_sym)
         end
     )
-    return _rewrap_loop(loop, wrappers)
+    loop = _rewrap_loop(loop, wrappers)
+    return quote
+        let $exhausted = $(_p(:Ref))(false)
+            $loop
+            $exhausted[] || $(_p(:pbtotal))($job_sym) === 0
+        end
+    end
 end
 
 """
@@ -289,9 +310,9 @@ end
 
 Registers a node for one `@progress` level (a `for` loop or a `begin ... end` block),
 runs `body_expr` under it with that node installed as the current bar, and on exit
-completes any pending statement subtasks and the node itself. When `thread_ctx` is a
-symbol, it is scoped-rebound to the new node for the duration of the block and restored
-afterwards, so a bound context automatically tracks the innermost node.
+completes any pending statement subtasks and the node itself. Explicit and inherited
+context names are fresh lexical bindings, so worker tasks never reassign an enclosing
+context binding.
 
 A loop's total is inferred from its iterable. A block is marked a milestone container,
 and its total is however many milestones it registers, counted as they arrive.
@@ -310,20 +331,26 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     node_kws = Any[Expr(:kw, :desc, opts[:desc]),
                    Expr(:kw, :theme, _theme_expr(opts)),
                    Expr(:kw, :kind, QuoteNode(kind)),
+                   Expr(:kw, :scoped, true),
                    _vanish_kws(opts)...,
                    _extract_extra_kws(opts)...]
 
-    saved_ctx = gensym("saved_ctx")
-    bind = opts[:bind] === nothing ? :() : :($(opts[:bind]) = $job_sym)
-    rebind_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $job_sym)
-    restore_ctx = thread_ctx === nothing ? :() : :($(thread_ctx) = $saved_ctx)
+    bindings = Any[]
+    opts[:bind] === nothing || push!(bindings, :($(opts[:bind]) = $job_sym))
+    if thread_ctx !== nothing && thread_ctx !== opts[:bind]
+        push!(bindings, :($thread_ctx = $job_sym))
+    end
 
-    bindings = Any[:($saved_ctx = $(thread_ctx))]
-
-    completion = :(if $(_p(:pbtotal))($job_sym) !== nothing &&
-                      $(_p(:pbdone))($job_sym) < $(_p(:pbtotal))($job_sym)
-                       $(_p(:update!))($job_sym, $(_p(:pbtotal))($job_sym))
-                   end)
+    completed = gensym("completed")
+    result = gensym("result")
+    run_body = is_loop ? quote
+        $completed = $body_expr
+        nothing
+    end : quote
+        $result = $body_expr
+        $completed = true
+        $result
+    end
 
     # the body runs with this level's node installed as the current bar, so that a bare
     # set_postfix!() inside it attaches here. Nested levels install their own, which is
@@ -332,20 +359,16 @@ function _build_level_block(parent, job_sym, opts, body_expr;
     saved_err = gensym("saved_err")
     body = quote
         let $(bindings...)
-            $bind
-            $rebind_ctx
+            $completed = false
             let $saved_bar = $(_p(:_install_bar!))($job_sym)
                 try
-                    $body_expr
+                    $run_body
                 catch $saved_err
-                    $(_p(:fail!))($job_sym, $saved_err)
-                    $(_p(:_fail_pending_milestones!))($job_sym, $saved_err)
+                    $(_p(:_fail_scope!))($job_sym, $saved_err)
                     rethrow()
                 finally
                     $(_p(:_restore_bar!))($saved_bar)
-                    $restore_ctx
-                    $(_p(:_complete_statement_jobs!))($job_sym)
-                    $(_p(:haserror))($job_sym) || $completion
+                    $(_p(:_close_scope!))($job_sym; completed = $completed)
                 end
             end
         end
@@ -364,11 +387,7 @@ function _build_level_block(parent, job_sym, opts, body_expr;
         quote
             $job_sym = $root
             $(_p(:start_render!))($job_sym)
-            try
-                $body
-            finally
-                $(_p(:stop_render!))($job_sym)
-            end
+            $body
         end
     end
 
@@ -384,8 +403,8 @@ end
 
 Parses one `@progress` invocation's arguments and builds the code for its level:
 form detection (loop / block / statement), option parsing, vanish inheritance from
-the enclosing level, `with=<ctx>` threading, and the context save/rebind/restore
-wrapping. Returns the generated block together with the parsed options (so the
+the enclosing level, `with=<ctx>` threading, and lexical context bindings.
+Returns the generated block together with the parsed options (so the
 caller can inspect e.g. `opts[:with]` or `opts[:title]`).
 """
 function _build_progress_level(m_args, parent,
@@ -425,8 +444,7 @@ function _build_progress_level(m_args, parent,
     else
         ctxv = nothing
         level_parent = parent
-        # the inherited context tracks this level (restored afterwards); a level's
-        # own `bind` is a fresh assignment instead.
+        # inherited and explicit names refer to this level only inside its body
         carried      = opts[:bind] isa Symbol ? opts[:bind] : thread_ctx
         block_thread = thread_ctx
     end
@@ -575,7 +593,10 @@ Finished milestones are kept on screen by `final_depth` (e.g. `d=1` above).
 A context can be bound with `(ctx => "desc")` or a bare symbol as the first
 argument (`@progress ctx "desc"`). A context *is* a bar -- the node the macro made --
 and it automatically tracks the innermost running node inside nested `@progress`
-levels, restored afterwards, so it can be passed to subroutines:
+levels, so it can be passed to subroutines. Loop and block forms bind context names
+lexically inside their bodies; an enclosing variable with the same name is unchanged.
+To retain a handle after the scope, assign it to a `Ref` inside the body. A bare milestone
+statement instead binds its name in the surrounding scope for subsequent statements.
 
     function subtask(ctx, n)
         @progress with=ctx "working..." for k in 1:n
@@ -590,8 +611,10 @@ levels, restored afterwards, so it can be passed to subroutines:
     end
 
 `with=ctx` registers the new bar under the one `ctx` points at, in the same tree
-(no new gutter). The context is also scoped-rebound to the new node inside its body,
-so deeper calls thread further, and restored afterwards.
+(no new gutter). A lexical binding of `ctx` points at the new node inside its body,
+so deeper calls thread further without changing the caller's binding. In macro-wrapped
+loops, the active bar is installed in each executing task, so bare `set_postfix!` calls
+also work inside `Threads.@threads` bodies.
 
 # syntax
 - `@progress "Description" for ...`
@@ -719,12 +742,11 @@ function _root_bar(total, title, final_depth, io;
                    vanish = nothing, vanish_timeout = nothing, width::Integer = 0,
                    error_vanish = nothing,
                    spinner = nothing, barunits = nothing, empty = nothing,
-                   caps = nothing, head = nothing)
+                   caps = nothing, head = nothing, scoped::Bool = true)
     return Progress(total; desc = desc, kind = kind, title = title,
                     final_depth = final_depth, child_vanish = 0.5, width = width,
                     theme = _apply_style(theme, spinner, barunits, empty, caps, head),
                     vanish = vanish, vanish_timeout = vanish_timeout,
                     error_vanish = error_vanish,
-                    io = io === nothing ? stdout : io)
+                    io = io === nothing ? stdout : io, scoped, start = false)
 end
-

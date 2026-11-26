@@ -15,8 +15,9 @@
 """
     Progress(f::Function, total = nothing; kwargs...)
 
-Run f(p) with a fresh bar, finishing it when f returns and registering the error when
-f throws:
+Run f(p) with a fresh scoped bar. A non-throwing return declares success and preserves
+the actual counter; an escaping exception records failure or interruption and is rethrown.
+Unfinished descendants are cancelled on exit, without stopping their Julia tasks:
 
     Progress(100; desc = "Training") do p
         for i in 1:100
@@ -24,19 +25,22 @@ f throws:
         end
     end
 
-The whole call is a log-capturing scope, so records emitted inside f are drawn under the
-bar and a bare `set_postfix!` resolves to it.
+A bare `set_postfix!` inside f resolves to this bar. Unlike a raw manual handle, reaching
+the total does not declare success before f returns. Explicit `finish!` still fills the
+counter to the total; `cancel!` preserves partial work.
 """
 function Progress(f::Function, total::Union{Int, Nothing} = nothing; kwargs...)
-    bar = Progress(total; kwargs...)
+    bar = Progress(total; kwargs..., scoped = true)
     _with_scope(bar) do
+        completed = false
         try
             f(bar)
+            completed = true
         catch err
-            fail!(bar, err)
+            _fail_scope!(bar, err)
             rethrow()
         finally
-            finish!(bar)
+            _close_scope!(bar; completed)
         end
     end
     return bar

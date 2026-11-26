@@ -64,8 +64,9 @@ Wrap a collection in a progress bar.
 
 The total is inferred from the collection when possible: HasLength and HasShape
 collections get a determinate bar with a percentage, a rate and an ETA, while infinite or
-size-unknown ones get an indeterminate spinner. Pass total = n to override the inference,
-or total = nothing to force indeterminate mode.
+size-unknown ones get an indeterminate spinner. Pass total = n to override the displayed
+total, or total = nothing to force indeterminate mode. This never changes the collection's
+length, shape, or elements.
 
 # keyword arguments
 
@@ -102,15 +103,16 @@ function prog(iter;
         throw(ProgbioticError("total must be an Int or nothing; got ", repr(resolved)))
 
     bar = Progress(resolved; desc = desc, layout = layout, io = io, vanish = vanish,
-                   fps = fps, flat_step = flat_step, tty = tty, threaded = threaded)
+                   fps = fps, flat_step = flat_step, tty = tty, threaded = threaded,
+                   scoped = true)
     return ProgbioticIterator(iter, bar)
 end
 
 """
     prog(f::Function, iter; kwargs...)
 
-Run f over a wrapped collection inside a log-capturing scope, and finish the bar when the
-loop ends. This is the form to use when the body logs:
+Run f over a collection with the bar installed as the active scope. The bar succeeds
+after exhaustion; an escaping exception is recorded and rethrown after cleanup:
 
     prog(1:100; desc = "Training") do x
         x == 50 && @info "halfway"
@@ -119,15 +121,18 @@ loop ends. This is the form to use when the body logs:
 function prog(f::Function, iter; kwargs...)
     wrapped = prog(iter; kwargs...)
     _with_scope(wrapped.bar) do
+        completed = false
         try
-            for item in wrapped
+            for item in wrapped.iter
+                next!(wrapped.bar)
                 f(item)
             end
+            completed = true
         catch err
-            fail!(wrapped.bar, err)
+            _fail_scope!(wrapped.bar, err)
             rethrow()
         finally
-            finish!(wrapped.bar)
+            _close_scope!(wrapped.bar; completed)
         end
     end
     return nothing
@@ -139,24 +144,22 @@ end
 
 # each step advances the atomic counter *before* handing the item to the loop body, so the
 # count always means "items produced so far" and no work is needed after the body returns.
-# When the underlying iterator is exhausted the bar is finished, which is what triggers the
-# final frame and, on a terminal, the vanish timer.
-function Base.iterate(it::ProgbioticIterator)
-    step = iterate(it.iter)
-    step === nothing && return _finish_iteration!(it)
-    next!(it.bar)
-    return step
-end
-
-function Base.iterate(it::ProgbioticIterator, state)
-    step = iterate(it.iter, state)
+# exhaustion closes the scope; fetching the last item alone cannot declare success
+function Base.iterate(it::ProgbioticIterator, args...)
+    step = try
+        iterate(it.iter, args...)
+    catch err
+        _fail_scope!(it.bar, err)
+        _close_scope!(it.bar; completed = false)
+        rethrow()
+    end
     step === nothing && return _finish_iteration!(it)
     next!(it.bar)
     return step
 end
 
 function _finish_iteration!(it::ProgbioticIterator)
-    finish!(it.bar)
+    _close_scope!(it.bar; completed = true)
     return nothing
 end
 
@@ -174,11 +177,7 @@ Base.lastindex(it::ProgbioticIterator) = lastindex(it.iter)
 Base.eachindex(it::ProgbioticIterator) = eachindex(it.iter)
 Base.keys(it::ProgbioticIterator) = keys(it.iter)
 
-function Base.length(it::ProgbioticIterator)
-    total = it.bar.state.total
-    total === nothing && return length(it.iter)
-    return total
-end
+Base.length(it::ProgbioticIterator) = length(it.iter)
 
 # Threads.@threads over an indexable collection splits the index range and reads elements
 # with getindex rather than with iterate, so index access has to advance the bar as well -
@@ -204,8 +203,40 @@ this for you; a bare `for x in prog(...)` can only do it from its own `catch`.
 """
 fail!(it::ProgbioticIterator, err) = (fail!(it.bar, err); it)
 
-"""Finish a wrapped collection's bar early (for example after breaking out)."""
+"""Declare a wrapped collection successful. Use `cancel!` for an incomplete run."""
 finish!(it::ProgbioticIterator; wait::Bool = !it.bar.opts.tty) = finish!(it.bar; wait = wait)
+
+"""Cancel a wrapped collection without filling its counter; this does not stop the consumer."""
+cancel!(it::ProgbioticIterator; wait::Bool = !it.bar.opts.tty) =
+    (cancel!(it.bar; wait); it)
+
+# observe exhaustion without treating a break or a return as successful scope exit
+struct _ScopeIterator{I}
+    iter :: I
+    done :: Base.RefValue{Bool}
+end
+
+function Base.iterate(it::_ScopeIterator, args...)
+    step = iterate(it.iter, args...)
+    step === nothing && (it.done[] = true)
+    return step
+end
+
+Base.IteratorSize(::Type{_ScopeIterator{I}}) where I = Base.IteratorSize(I)
+Base.IteratorEltype(::Type{_ScopeIterator{I}}) where I = Base.IteratorEltype(I)
+Base.eltype(::Type{_ScopeIterator{I}}) where I = eltype(I)
+Base.length(it::_ScopeIterator) = length(it.iter)
+Base.size(it::_ScopeIterator) = size(it.iter)
+Base.axes(it::_ScopeIterator) = axes(it.iter)
+Base.eachindex(it::_ScopeIterator) = eachindex(it.iter)
+Base.firstindex(it::_ScopeIterator) = firstindex(it.iter)
+Base.lastindex(it::_ScopeIterator) = lastindex(it.iter)
+
+function Base.getindex(it::_ScopeIterator, indices...)
+    value = getindex(it.iter, indices...)
+    indices == (lastindex(it.iter),) && (it.done[] = true)
+    return value
+end
 
 function Base.show(io::IO, it::ProgbioticIterator)
     state = it.bar.state

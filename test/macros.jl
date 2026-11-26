@@ -515,6 +515,59 @@ end
         @test Progbiotic.root_of(in_working[]) === root    # one tree, one renderer
     end
 
+    @testset "loop and block contexts are lexical" begin
+        ctx = :outside
+        root = Ref{Any}(nothing)
+        inner = Ref{Any}(nothing)
+        after = Ref{Any}(nothing)
+        captured = Ref{Any}(nothing)
+
+        @progress ctx "lexical root" io=IOBuffer() begin
+            root[] = ctx
+            @progress ctx "lexical inner" for i in 1:1
+                inner[] = ctx
+                captured[] = () -> ctx
+            end
+            after[] = ctx
+        end
+
+        @test ctx === :outside
+        @test after[] === root[]
+        @test inner[].parent === root[]
+        @test captured[]() === inner[]
+
+        @progress ctx "lexical loop" io=IOBuffer() for i in 1:1
+            root[] = ctx
+        end
+        @test ctx === :outside
+        @test root[].state.desc[] == "lexical loop"
+    end
+
+    @testset "wrapped bodies preserve control flow and active scope" begin
+        function wrapped(action)
+            seen = Int[]
+            @progress "wrapped" io=IOBuffer() Base.@inbounds for i in 1:4
+                if i == 2
+                    action === :return && return seen
+                    action === :break && break
+                    action === :continue && continue
+                    action === :throw && error("wrapped body")
+                end
+                push!(seen, i)
+            end
+            return seen
+        end
+
+        prior = current_bar()
+        for (action, expected) in ((:return, [1]), (:break, [1]),
+                                   (:continue, [1, 3, 4]), (:complete, [1, 2, 3, 4]))
+            @test wrapped(action) == expected
+            @test current_bar() === prior
+        end
+        @test_throws ErrorException wrapped(:throw)
+        @test current_bar() === prior
+    end
+
     @testset "with= statement form and sibling placement" begin
         root_ref = Ref{Any}(nothing)
         function steps(ctx)

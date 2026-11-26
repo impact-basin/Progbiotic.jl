@@ -65,7 +65,7 @@ function render_line(node::Progress, state::BarState, desc_width::Int = 0,
                      width::Union{Int, Nothing} = nothing)
     parts = String[]
     for column in node_layout(node, desc_width, _line_width(node, width))
-        text = render_column(column, state)
+        text = _safe_text(render_column(column, state))
         isempty(text) || push!(parts, text)
     end
     return join(parts, " ")
@@ -169,6 +169,11 @@ else goes once its timeout has run out from the tick that first saw it settled. 
 errored node counts down `error_vanish` rather than `vanish`, which defaults to forever.
 """
 function _visible(node::Progress, now_sec::Float64)
+    status = pbstatus(node)
+    if status !== node.paint.status
+        node.paint.status = status
+        node.paint.completed_at = 0.0
+    end
     any(child -> _visible(child, now_sec), children(node)) && return true
     # final_depth promises to keep N levels of children below the top of the tree. The
     # root is not one of them: it vanishes on its own timeout, like any other bar.
@@ -227,23 +232,49 @@ function render_tree(node::Progress; collapse::Bool = true, width::Int = 0,
     records === nothing || (rows = vcat(_record_rows(records, symbols), rows))
     isempty(rows) && return ""            # nothing visible: there is nothing to measure
 
-    desc_width = max(_MIN_DESC_WIDTH, maximum(row -> length(row.state.desc[]), rows))
+    desc_width = max(_MIN_DESC_WIDTH, maximum(row -> _visible_width(row.state.desc[]), rows))
     bar_width  = _tree_bar_width(rows, desc_width, width)
 
     io     = IOBuffer()
     titled = !isempty(node.root.title)
-    titled && println(io, _ANSI_BOLD, node.root.title, _ANSI_RESET)
+    titled && println(io, _clip(string(_ANSI_BOLD, node.root.title, _ANSI_RESET), width))
 
     for (i, row) in enumerate(rows)
         # an untitled tree draws its root flush at column 0, with no branch at all
         flush_root = i == 1 && !titled
-        line = string(flush_root ? "" : row.prefix,
+        prefix = flush_root ? "" : row.prefix
+        line = string(prefix,
                       render_line(row.node, row.state, desc_width, bar_width))
-        println(io, _clip(line, width))
+        println(io, _fit_row(row, line, prefix, width))
     end
     # the rows are newline-joined, not newline-terminated: the gutter splits this on
     # newlines to count the height of the block it is about to claim
     return chomp(String(take!(io)))
+end
+
+# a narrow row may lose its track or label, but must not lose its failure outcome
+function _fit_row(row::Row, line::AbstractString, prefix::AbstractString, width::Int)
+    # render_line already sanitised each column, so a fitting row needs no second pass.
+    # bytes bound cells: escapes and wide glyphs only ever reduce the cell count
+    (width <= 0 || ncodeunits(line) <= width || _visible_width(line) <= width) && return line
+    status = pbstatus(row.state)
+    short, marker = status === :failed      ? ("ERROR", "!") :
+                    status === :cancelled   ? ("cancelled", "-") :
+                    status === :interrupted ? ("interrupted", "!") :
+                    istainted(row.state)    ? ("affected", "!") : ("", "")
+    isempty(short) && return _clip(line, width)
+
+    detail = status in (:failed, :cancelled, :interrupted) ?
+             _safe_text(render_column(Eta(), row.state)) : short
+    _visible_width(detail) > width && (detail = short)
+    _visible_width(detail) > width && (detail = marker)
+    budget = width - _visible_width(detail) - 1
+    status === :failed && (detail = string(_ERROR_FG, detail, _ANSI_RESET))
+    budget <= 0 && return _clip(detail, width)
+
+    label = isempty(row.state.desc[]) ? "Progress" : row.state.desc[]
+    _visible_width(prefix) < budget && (label = string(prefix, label))
+    return string(_clip(label, budget), " ", detail)
 end
 
 # a record's chain, re-rooted at column 0: each link is the only child of the one above,
@@ -268,13 +299,14 @@ end
 
 A node's integer completion percentage, or -1 when it has no total.
 """
-function flat_percentage(node::Progress)
-    state = node.state
+function flat_percentage(state::BarState)
     total = state.total
     total === nothing && return -1
     total <= 0 && return 100
     return clamp(floor(Int, 100 * pbdone(state) / total), 0, 100)
 end
+
+flat_percentage(node::Progress) = flat_percentage(node.state)
 
 # the columns a flat line already accounts for: a spinner and a bar carry nothing in a
 # file, the label, percentage and count are in the head, and Postfix is appended below
@@ -297,7 +329,8 @@ rendering of a column would be a second thing to keep in step.
 """
 function render_flat_line(node::Progress, depth::Int = 0,
                           state::BarState = _snapshot(node.state))
-    label  = isempty(state.desc[]) ? "Progress" : state.desc[]
+    label  = _plain_text(state.desc[])
+    isempty(label) && (label = "Progress")
     indent = repeat("  ", depth)
 
     head = if state.total === nothing
@@ -311,83 +344,144 @@ function render_flat_line(node::Progress, depth::Int = 0,
     extras = String[]
     for column in node_layout(node)
         any(T -> column isa T, _FLAT_SKIP) && continue
-        text = render_column(column, state)
+        text = _plain_text(render_column(column, state))
         isempty(text) || push!(extras, text)
     end
 
-    postfix = postfix_text(state)
+    postfix = _plain_text(postfix_text(state))
     isempty(postfix) || push!(extras, string("[", postfix, "]"))
 
-    isempty(extras) && return head
-    return string(head, " ", join(extras, " "))
+    text = isempty(extras) ? head : string(head, " ", join(extras, " "))
+    return _plain_text(text)
 end
 
 # ---------------------------------------------------------------------------
 # measuring a line that carries escape sequences
 # ---------------------------------------------------------------------------
 
-"""
-    _visible_width(s) -> Int
+# control strings are consumed whole, including incomplete payloads at end of input
+const _TEXT_CONTROLS = r"""
+    (?:\e\]|\x9d)(?:[^\a\e\x9c]|\e(?!\\))*(?:\a|\e\\|\x9c|$)
+  | (?:\e[PX^_]|[\x90\x98\x9e\x9f])(?:[^\e\x9c]|\e(?!\\))*(?:\e\\|\x9c|$)
+  | (?:\e\[|\x9b)[\x00-\x3f]*(?:[\x40-\x7e]|$)
+  | \e[\x20-\x2f]*[\x30-\x7e]?
+  | [\x00-\x1f\x7f-\x9f\u2028\u2029\u202a-\u202e\u2066-\u2069]
+"""x
+const _TEXT_SGR = r"^\e\[[0-9;:]*m$"
+const _TEXT_LINK = r"^\e\]8;([^;\x00-\x1f\x7f-\x9f\u2028\u2029]*);([^\x00-\x1f\x7f-\x9f\u2028\u2029]*)(?:\a|\e\\)$"
+const _LINK_CLOSE = "\e]8;;\e\\"
+const _EMOJI_PRESENTATION = r"\p{Emoji_Presentation}|\p{Regional_Indicator}|\ufe0f|\u20e3"
 
-The columns a string occupies on screen, counting a CSI escape sequence as zero-width
-and anything else as one column.
 """
-function _visible_width(s::AbstractString)
-    n    = 0
-    i    = firstindex(s)
-    last = lastindex(s)
-    while i <= last
-        if s[i] == '\e' && i < last && s[nextind(s, i)] == '['
-            i = _skip_csi(s, i, last)
-            i === nothing && return n
-        else
-            n += 1
-            i = nextind(s, i)
+    _safe_text(s; styled = true) -> String
+
+Normalise one terminal fragment. Preserve SGR and OSC 8 hyperlinks only, closing both
+at the boundary. Other commands are removed; line breaks and tabs become spaces.
+Incomplete control strings are discarded. Flat output passes `styled=false`.
+"""
+function _safe_text(s::AbstractString; styled::Bool = true)
+    text = String(s)
+    _ascii_plain(text) && return text
+    isvalid(text) || (text = String([isvalid(c) ? c : '\ufffd' for c in text]))
+    occursin(_TEXT_CONTROLS, text) || return text
+
+    io = IOBuffer()
+    pos = firstindex(text)
+    sgr = false
+    link = false
+    for m in eachmatch(_TEXT_CONTROLS, text)
+        m.offset > pos && write(io, SubString(text, pos, prevind(text, m.offset)))
+        token = m.match
+        if token in ("\t", "\n", "\r", "\v", "\f", "\u2028", "\u2029")
+            write(io, ' ')
+        elseif styled && occursin(_TEXT_SGR, token)
+            write(io, token)
+            sgr = token != "\e[m" && token != _ANSI_RESET
+        elseif styled
+            match_link = match(_TEXT_LINK, token)
+            if match_link !== nothing
+                params, uri = match_link.captures
+                write(io, "\e]8;", params, ';', uri, "\e\\")
+                link = !isempty(uri)
+            end
         end
+        pos = m.offset + ncodeunits(token)
     end
-    return n
+    pos <= ncodeunits(text) && write(io, SubString(text, pos))
+    link && write(io, _LINK_CLOSE)
+    sgr && write(io, _ANSI_RESET)
+    return String(take!(io))
+end
+
+_plain_text(s::AbstractString) = _safe_text(s; styled = false)
+
+# the overwhelmingly common row: printable ASCII, one byte per cell, no escapes
+function _ascii_plain(s::AbstractString)
+    isascii(s) || return false
+    for b in codeunits(s)
+        0x20 <= b <= 0x7e || return false
+    end
+    return true
+end
+
+# terminal cells belong to graphemes, not their individual codepoints
+function _grapheme_width(g::AbstractString)
+    width = textwidth(g)
+    width == 0 && return 0
+    return occursin(_EMOJI_PRESENTATION, g) ? max(2, maximum(textwidth, g)) : width
+end
+
+"""Terminal cells after text normalisation; joined and emoji-presentation clusters use two."""
+function _visible_width(s::AbstractString)
+    _ascii_plain(s) && return ncodeunits(s)
+    text = _plain_text(s)
+    _ascii_plain(text) && return ncodeunits(text)
+    return sum(_grapheme_width, graphemes(text); init = 0)
+end
+
+function _rpad_text(s::AbstractString, width::Int)
+    text = _safe_text(s)
+    return string(text, repeat(" ", max(0, width - _visible_width(text))))
 end
 
 """
     _truncate_ansi(s, width) -> String
 
-Truncate a string to at most `width` visible columns, treating ANSI escape sequences as
-zero-width. Only CSI sequences are recognised as zero-width; anything else counts as
-one column. Truncation ends with a reset, so no colour bleeds into what follows.
+Keep complete graphemes occupying at most `width` cells. Segment the plain text so
+styling inside a combining/emoji sequence cannot introduce a false clipping boundary.
+Reattach only the corresponding prefix of styling, closing any open styles or links.
 """
 function _truncate_ansi(s::AbstractString, width::Int)
-    n    = 0
-    i    = firstindex(s)
-    last = lastindex(s)
-    buf  = IOBuffer()
-    while i <= last && n < width
-        if s[i] == '\e' && i < last && s[nextind(s, i)] == '['
-            j = _skip_csi(s, i, last)
-            j === nothing && break          # unterminated escape: drop the rest
-            write(buf, SubString(s, i, j))
-            i = nextind(s, j)
-        else
-            write(buf, s[i])
-            n += 1
-            i = nextind(s, i)
-        end
+    width <= 0 && return ""
+    # ASCII is one cell per byte, so the cheap path cannot split a grapheme
+    _ascii_plain(s) && return String(ncodeunits(s) <= width ? s : SubString(s, 1, width))
+    text = _safe_text(s)
+    plain = _plain_text(text)
+    used = 0
+    bytes = 0
+    for g in graphemes(plain)
+        cells = _grapheme_width(g)
+        used + cells > width && break
+        used += cells
+        bytes += ncodeunits(g)
     end
-    out = String(take!(buf))
-    return n >= width ? string(out, _ANSI_RESET) : out
+    bytes == ncodeunits(plain) && return text
+    bytes == 0 && return ""
+
+    io = IOBuffer()
+    pos = firstindex(text)
+    for m in eachmatch(_TEXT_CONTROLS, text)
+        n = min(bytes, m.offset - pos)
+        n > 0 && write(io, SubString(text, pos, prevind(text, pos + n)))
+        bytes -= n
+        bytes == 0 && break
+        write(io, m.match)
+        pos = m.offset + ncodeunits(m.match)
+    end
+    bytes > 0 && write(io, SubString(text, pos, prevind(text, pos + bytes)))
+    return _safe_text(String(take!(io)))
 end
 
-# the index of the last byte of the CSI sequence starting at i, or nothing when it is
-# unterminated. Its final byte is in '@'..'~'.
-function _skip_csi(s::AbstractString, i::Int, last::Int)
-    j = nextind(s, i)                       # the '['
-    while j <= last
-        j = nextind(s, j)
-        j > last && break
-        '@' <= s[j] <= '~' && return j
-    end
-    return nothing
-end
-
-# clip a line to a terminal width, where 0 means there is no terminal to fit into.
+# width zero means unbounded output, but never unrestricted terminal commands
 _clip(line::AbstractString, width::Int) =
-    width <= 0 ? String(line) : _truncate_ansi(line, width)
+    width <= 0 ? _safe_text(line) : _truncate_ansi(line, width)

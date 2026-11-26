@@ -43,6 +43,36 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
 
         @test render_column(Spinner(:clock), state) in Spinner(:clock).frames
         @test_throws ProgbioticError Spinner(:nope)
+
+        palette = AMBER.palette[1:0]
+        P = eltype(palette)
+        @test_throws ProgbioticError Spinner(String[])
+        @test_throws ProgbioticError Spinner(String[], palette, 12.0)
+        @test_throws ProgbioticError Spinner{P}(String[], palette, 12)
+        for hz in (NaN, Inf, -Inf)
+            @test_throws ProgbioticError Spinner(:line; hz)
+            @test_throws ProgbioticError Spinner(["x"]; hz)
+            @test_throws ProgbioticError Spinner(["x"], palette, hz)
+            @test_throws ProgbioticError Spinner{P}(["x"], palette, hz)
+        end
+
+        @test Spinner(:line; hz = 1).hz === 1.0
+        @test Spinner(["x"]; hz = 1).hz === 1.0
+        @test Spinner{P}(["x"], palette, 1).hz === 1.0
+        for hz in (0.0, -0.0)
+            @test render_column(Spinner(["a", "b", "c"]; hz), state) == "a"
+        end
+        @test render_column(Spinner(["a", "b", "c"]; hz = eps(Float64)), state) == "a"
+        @test render_column(Spinner(["a", "b", "c"]; hz = -eps(Float64)), state) == "c"
+        for hz in (-12.0, nextfloat(0.0), -nextfloat(0.0), 1e20, -1e20,
+                   floatmax(Float64), -floatmax(Float64))
+            for colours in (palette, AMBER.palette)
+                col = Spinner(["a", "b", "c"]; palette = colours, hz)
+                @test strip_ansi(render_column(col, state)) in col.frames
+            end
+        end
+        @test render_column(Spinner(["\U0001f550"]; hz = 0), state) == "\U0001f550"
+        @test render_column(Spinner(:moon), state) in Spinner(:moon).frames
     end
 
     @testset "Tag templates" begin
@@ -108,6 +138,43 @@ Progbiotic.render_column(::TestFixedColumn, state::BarState) = "fixed"
                                            aged_state(total = nothing)))
         @test length(marquee) == 22           # 20 + the two caps
         @test count(==('#'), marquee) == 5
+
+        idle = aged_state(total = nothing)
+        @test render_column(Bar(fill = '#', empty = '-', width = 1), idle) == " # "
+        for width in 1:8
+            text = render_column(Bar(fill = '#', empty = '-', width = width), idle)
+            @test textwidth(text) == width + 2
+            @test count(==('#'), text) == max(1, width ÷ 4)
+        end
+
+        palette = AMBER.palette[1:0]
+        P = eltype(palette)
+        @test_throws ProgbioticError Bar(Char[], '-', palette)
+        @test_throws ProgbioticError Bar(Char[], '-', palette, (' ', ' '), nothing, 3)
+        @test_throws ProgbioticError Bar{P}(Char[], '-', palette, (' ', ' '), nothing, 3)
+        for width in (0, -1)
+            @test Bar(fill = '#', empty = '-', width = width).width == 1
+            @test Bar(['#'], '-', palette; width).width == 1
+            @test_throws ProgbioticError Bar(['#'], '-', palette, (' ', ' '), nothing, width)
+            @test_throws ProgbioticError Bar{P}(['#'], '-', palette, (' ', ' '), nothing, width)
+        end
+        raw = Bar{P}(['#'], '-', palette, ('[', ']'), '>', Int8(3))
+        @test raw.width === 3
+        @test render_column(raw, idle) in ("[#--]", "[-#-]", "[--#]")
+
+        for c in ('\u754c', '\u0301', '\u200b', '\n', '\t', '\r', '\e', reinterpret(Char, 0xffffffff))
+            @test_throws ProgbioticError Bar(fill = c)
+            @test_throws ProgbioticError Bar(empty = c)
+            for args in ((['#', c], '-', palette, (' ', ' '), nothing),
+                         (['#'], c, palette, (' ', ' '), nothing),
+                         (['#'], '-', palette, (c, ' '), nothing),
+                         (['#'], '-', palette, (' ', c), nothing),
+                         (['#'], '-', palette, (' ', ' '), c))
+                @test_throws ProgbioticError Bar(args...; width = 3)
+                @test_throws ProgbioticError Bar(args..., 3)
+                @test_throws ProgbioticError Bar{P}(args..., 3)
+            end
+        end
     end
 
     @testset "Percent" begin

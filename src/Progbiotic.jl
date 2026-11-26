@@ -2,6 +2,7 @@ module Progbiotic
 
 using ColorTypes: Colorant, RGB, N0f8, red, green, blue
 using MacroTools: @capture
+using Unicode: graphemes
 
 include("errors.jl")
 export ProgbioticError
@@ -28,7 +29,7 @@ export duration_str
 include("bar.jl")
 export BarState
 export pbdone, pbtotal, pbfraction, pbrate, pbeta, pbelapsed, pbruntime, isfinished
-export haserror, pberror, fail!
+export pbstatus, haserror, pberror, fail!, cancel!
 export Progress
 export child, children, root_of, node_depth
 
